@@ -15,6 +15,7 @@ export interface Session {
   duration_ms: number | null;
   paused_ms: number;
   audio_exists: boolean;
+  segment_count: number;
 }
 
 export interface SessionStatus {
@@ -22,6 +23,27 @@ export interface SessionStatus {
   state: "recording" | "paused" | "ended";
   elapsed_ms: number;
   writer_failed: boolean;
+  stt_active: boolean;
+  stt_failed: boolean;
+}
+
+export interface TranscriptSegment {
+  id: number;
+  session_id: number;
+  start_ms: number;
+  end_ms: number;
+  text: string;
+}
+
+export interface Segment {
+  start_ms: number;
+  end_ms: number;
+  text: string;
+}
+
+export interface ModelProgress {
+  downloaded: number;
+  total: number;
 }
 
 export const ipc = {
@@ -35,6 +57,15 @@ export const ipc = {
   listSessions: () => invoke<Session[]>("list_sessions"),
   revealSession: (id: number) => invoke<void>("reveal_session", { id }),
   forgetSession: (id: number) => invoke<void>("forget_session", { id }),
+  listSegments: (sessionId: number) =>
+    invoke<TranscriptSegment[]>("list_segments", { sessionId }),
+  modelsReady: () => invoke<boolean>("models_ready"),
+  ensureModels: () => invoke<void>("ensure_models"),
+  exportTranscript: (id: number) => invoke<string>("export_transcript", { id }),
   onLevel: (cb: (level: number) => void): Promise<UnlistenFn> =>
     listen<number>("audio:level", (e) => cb(e.payload)),
+  onSegment: (cb: (s: Segment) => void): Promise<UnlistenFn> =>
+    listen<Segment>("transcript:segment", (e) => cb(e.payload)),
+  onModelProgress: (cb: (p: ModelProgress) => void): Promise<UnlistenFn> =>
+    listen<ModelProgress>("model:progress", (e) => cb(e.payload)),
 };

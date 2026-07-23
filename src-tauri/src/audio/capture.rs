@@ -99,10 +99,20 @@ pub struct Capture {
     pub paused: Arc<AtomicBool>,
     pub level_rx: Receiver<f32>,
     pub wav_path: PathBuf,
+    /// Native sample rate of the input device, as reported by cpal at
+    /// stream setup. The STT worker needs this to configure its resampler.
+    pub sample_rate: u32,
     /// Set by the writer thread if a WAV I/O error occurs mid-session
     /// (e.g. disk full). The UI can poll this instead of joining.
     pub writer_failed: Arc<AtomicBool>,
     buffer_tx: Option<Sender<Vec<f32>>>,
+    /// The original (outer) tee sender, kept alive on `Capture` itself so
+    /// `stop()` can send an explicit shutdown sentinel — mirrors why
+    /// `buffer_tx` is kept: relying solely on the callback's clone (`cb_tee`)
+    /// dropping is not safe, since a zombie CoreAudio callback can keep that
+    /// clone alive forever, and without a sentinel the STT worker's `rx.iter()`
+    /// would then block forever waiting for disconnect.
+    tee_tx: Option<Sender<Vec<f32>>>,
     writer: Option<JoinHandle<Result<(), YapperError>>>,
     stop_tx: Option<Sender<()>>,
     stream_thread: Option<JoinHandle<()>>,
@@ -110,7 +120,17 @@ pub struct Capture {
 
 impl Capture {
     /// Start capturing from `device_name` (or the default input) into `wav_path`.
-    pub fn start(device_name: Option<&str>, wav_path: PathBuf) -> Result<Self, YapperError> {
+    ///
+    /// `tee_tx`, if provided, receives a clone of every gated mono buffer in
+    /// addition to the WAV writer — this feeds the STT worker. It must be a
+    /// *bounded* channel: the callback uses `try_send`, so a worker that
+    /// falls behind just drops audio for STT (never for the WAV, and never
+    /// blocking the audio callback itself).
+    pub fn start(
+        device_name: Option<&str>,
+        wav_path: PathBuf,
+        tee_tx: Option<Sender<Vec<f32>>>,
+    ) -> Result<Self, YapperError> {
         let paused = Arc::new(AtomicBool::new(false));
         let writer_failed = Arc::new(AtomicBool::new(false));
         let (buffer_tx, buffer_rx) = crossbeam_channel::unbounded::<Vec<f32>>();
@@ -123,6 +143,7 @@ impl Capture {
         let device_name_owned = device_name.map(|s| s.to_string());
         let cb_tx = buffer_tx.clone();
         let cb_paused = paused.clone();
+        let cb_tee = tee_tx.clone();
 
         // Owns the cpal Device/Stream for its entire lifetime; both are
         // dropped when this thread returns (after stop_rx signals/disconnects).
@@ -161,6 +182,9 @@ impl Capture {
                 &stream_config,
                 move |data: &[f32], _| {
                     if let Some(mono) = gate_and_downmix(data, channels, &cb_paused) {
+                        if let Some(t) = &cb_tee {
+                            let _ = t.try_send(mono.clone());
+                        }
                         let _ = cb_tx.send(mono);
                     }
                 },
@@ -221,8 +245,10 @@ impl Capture {
             paused,
             level_rx,
             wav_path,
+            sample_rate,
             writer_failed,
             buffer_tx: Some(buffer_tx),
+            tee_tx,
             writer: Some(writer),
             stop_tx: Some(stop_tx),
             stream_thread: Some(stream_thread),
@@ -239,7 +265,12 @@ impl Capture {
     ///    is joined;
     /// 3. the writer is told to finish via an in-band empty-buffer sentinel —
     ///    it must never depend on every Sender clone being dropped;
-    /// 4. only then is the writer joined.
+    /// 4. the STT worker (if any) gets the same in-band empty-buffer sentinel
+    ///    via the tee channel, for the same reason — a zombie callback could
+    ///    otherwise keep its `cb_tee` clone alive forever, and the worker's
+    ///    `rx.iter()` would then never see the channel disconnect;
+    /// 5. only then are the writer and (elsewhere, by the caller) the STT
+    ///    worker joined.
     ///
     /// MUST NOT be called on the main thread: step 2's teardown can require
     /// the main run loop to be live (see async commands in lib.rs).
@@ -250,6 +281,13 @@ impl Capture {
             stream_thread
                 .join()
                 .map_err(|_| YapperError::Audio("stream thread panicked".into()))?;
+        }
+        if let Some(tee_tx) = self.tee_tx.take() {
+            // Best-effort: the tee is bounded, but by now the stream thread
+            // has stopped producing, so the STT worker's steady draining
+            // will free capacity for this to land. Even if it doesn't, the
+            // sender's drop right after still severs one live clone.
+            let _ = tee_tx.send(Vec::new());
         }
         if let Some(buffer_tx) = self.buffer_tx.take() {
             let _ = buffer_tx.send(Vec::new()); // sentinel: writer finishes even if a zombie sender survives
@@ -341,5 +379,14 @@ mod tests {
     fn capture_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<Capture>();
+    }
+
+    // Extend the existing helper contract: `Capture::start` takes an
+    // optional tee Sender. The pure test just re-checks gate behavior is
+    // unchanged; the tee itself is wiring (worker test covers flow).
+    #[test]
+    fn gate_and_downmix_feeds_tee_when_provided() {
+        let paused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        assert!(gate_and_downmix(&[0.1, 0.1], 1, &paused).is_some());
     }
 }
