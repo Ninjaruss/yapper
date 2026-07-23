@@ -33,8 +33,14 @@ fn list_input_devices() -> Result<Vec<audio::InputDevice>, YapperError> {
     audio::list_input_devices()
 }
 
+// ASYNC IS LOAD-BEARING on this command and on end_session: Tauri runs
+// non-async commands on the MAIN thread. Capture start/stop block on audio
+// threads, and macOS CoreAudio teardown misbehaves while the main run loop
+// is parked (observed via thread sample: zombie input callback → writer
+// join never returns → app beachball). Async commands run on the runtime's
+// worker threads, keeping the main loop live. Do not remove `async`.
 #[tauri::command]
-fn start_session(
+async fn start_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     intent: String,
@@ -48,11 +54,14 @@ fn start_session(
     let id = state.store.create_session(started, &intent)?;
 
     let setup_result = (|| -> Result<Capture, YapperError> {
+        // Recordings live somewhere the user can actually find them
+        // (~/Music/Yapper on macOS); the hidden app-data dir is only a fallback.
         let audio_dir = app
             .path()
-            .app_data_dir()
-            .map_err(|e| YapperError::Audio(e.to_string()))?
-            .join("audio");
+            .audio_dir()
+            .map(|d| d.join("Yapper"))
+            .or_else(|_| app.path().app_data_dir().map(|d| d.join("audio")))
+            .map_err(|e| YapperError::Audio(e.to_string()))?;
         std::fs::create_dir_all(&audio_dir)?;
         let wav_path = audio_dir.join(format!("session-{id}.wav"));
         Capture::start(device_name.as_deref(), wav_path)
@@ -124,8 +133,9 @@ fn session_status(state: State<'_, AppState>) -> Result<Option<SessionStatus>, Y
     }))
 }
 
+// Async for the same main-thread reason as start_session — see comment there.
 #[tauri::command]
-fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError> {
+async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError> {
     let mut active = state.active.lock().map_err(|_| YapperError::State("state lock poisoned".into()))?;
     let mut s = active.take().ok_or_else(|| YapperError::State("no session".into()))?;
     let totals = s.clock.end(now_ms());
@@ -142,12 +152,43 @@ fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError> {
         totals.paused_ms,
     )?;
     stop_result?;
-    state.store.get_session(s.id)
+    state.store.get_session(s.id).map(with_audio_exists)
+}
+
+fn with_audio_exists(mut session: Session) -> Session {
+    session.audio_exists = session
+        .audio_path
+        .as_ref()
+        .map(|p| std::path::Path::new(p).exists())
+        .unwrap_or(false);
+    session
 }
 
 #[tauri::command]
 fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>, YapperError> {
-    state.store.list_sessions()
+    Ok(state
+        .store
+        .list_sessions()?
+        .into_iter()
+        .map(with_audio_exists)
+        .collect())
+}
+
+/// Remove a session row whose recording the user no longer wants tracked.
+/// Never touches the audio file itself.
+#[tauri::command]
+fn forget_session(state: State<'_, AppState>, id: i64) -> Result<(), YapperError> {
+    state.store.delete_session(id)
+}
+
+#[tauri::command]
+fn reveal_session(state: State<'_, AppState>, id: i64) -> Result<(), YapperError> {
+    let session = state.store.get_session(id)?;
+    let path = session
+        .audio_path
+        .ok_or_else(|| YapperError::State("no audio file recorded for this session".into()))?;
+    tauri_plugin_opener::reveal_item_in_dir(&path)
+        .map_err(|e| YapperError::State(format!("could not show file: {e}")))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -169,7 +210,9 @@ pub fn run() {
             resume_listening,
             session_status,
             end_session,
-            list_sessions
+            list_sessions,
+            reveal_session,
+            forget_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -62,6 +62,14 @@ pub fn spawn_writer(
             let mut writer = hound::WavWriter::create(&path, spec)
                 .map_err(|e| YapperError::Audio(e.to_string()))?;
             for buffer in rx.iter() {
+                // Empty buffer = shutdown sentinel from `Capture::stop()`.
+                // The writer must NOT rely on channel disconnection alone:
+                // macOS CoreAudio can leave a zombie input callback (and its
+                // Sender clone) alive after the stream is dropped, which
+                // would keep this loop parked forever.
+                if buffer.is_empty() {
+                    break;
+                }
                 let _ = level_tx.try_send(super::rms_level(&buffer));
                 for s in &buffer {
                     let clamped = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
@@ -177,7 +185,14 @@ impl Capture {
             // Either an explicit signal or the sender disconnecting (stop_tx
             // dropped) unblocks this recv.
             let _ = stop_rx.recv();
-            // `stream` (and `device`) drop here, stopping the hardware.
+            // Stop explicitly rather than relying on Drop: CoreAudio teardown
+            // can silently fail (observed when the main thread is busy),
+            // leaving a zombie callback. An explicit pause is better-defined,
+            // and any error is at least visible in dev logs.
+            if let Err(e) = stream.pause() {
+                eprintln!("audio stream stop error: {e}");
+            }
+            // `stream` (and `device`) drop here, releasing the hardware.
         });
 
         let sample_rate = match ready_rx.recv() {
@@ -216,18 +231,29 @@ impl Capture {
 
     /// Stop the stream, close the channel, wait for the WAV to finalize.
     ///
-    /// Ordering invariant: the stream thread must be joined (dropping the
-    /// callback's `Sender` clone it holds) before joining the writer, else
-    /// the writer's `rx.iter()` never sees the channel close and this would
-    /// deadlock — `buffer_tx` here isn't the only sender still alive.
+    /// Shutdown is deliberately redundant, because macOS CoreAudio teardown
+    /// is not trustworthy (observed: a "zombie" input callback that outlives
+    /// the dropped stream and keeps its Sender clone alive forever):
+    /// 1. `paused` is set so even a zombie callback stops producing audio;
+    /// 2. the stream thread is signaled, pauses the stream explicitly, and
+    ///    is joined;
+    /// 3. the writer is told to finish via an in-band empty-buffer sentinel —
+    ///    it must never depend on every Sender clone being dropped;
+    /// 4. only then is the writer joined.
+    ///
+    /// MUST NOT be called on the main thread: step 2's teardown can require
+    /// the main run loop to be live (see async commands in lib.rs).
     pub fn stop(mut self) -> Result<PathBuf, YapperError> {
+        self.paused.store(true, Ordering::Relaxed);
         self.stop_tx.take(); // drop → disconnects → stream thread's recv() returns
         if let Some(stream_thread) = self.stream_thread.take() {
             stream_thread
                 .join()
                 .map_err(|_| YapperError::Audio("stream thread panicked".into()))?;
         }
-        drop(self.buffer_tx.take()); // now every Sender clone is gone → writer finalizes
+        if let Some(buffer_tx) = self.buffer_tx.take() {
+            let _ = buffer_tx.send(Vec::new()); // sentinel: writer finishes even if a zombie sender survives
+        }
         if let Some(writer) = self.writer.take() {
             writer
                 .join()
@@ -281,6 +307,34 @@ mod tests {
         paused.store(false, Ordering::Relaxed);
         let out = gate_and_downmix(&[0.5, 0.3, 0.5, 0.3], 2, &paused).unwrap();
         assert_eq!(out, vec![0.4, 0.4]); // stereo averaged to mono
+    }
+
+    // Regression test for the End-the-talk hang: on macOS, CoreAudio can keep
+    // the input callback (and its Sender clone) alive after the stream is
+    // dropped, so the writer must not depend on channel disconnection alone.
+    #[test]
+    fn writer_exits_on_sentinel_even_with_live_sender() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("take.wav");
+        let (tx, rx) = crossbeam_channel::unbounded::<Vec<f32>>();
+        let (level_tx, _level_rx) = crossbeam_channel::bounded::<f32>(8);
+        let writer_failed = Arc::new(AtomicBool::new(false));
+        let handle = spawn_writer(wav_path.clone(), 48_000, rx, level_tx, writer_failed);
+
+        tx.send(vec![0.5; 480]).unwrap();
+        tx.send(Vec::new()).unwrap(); // shutdown sentinel; tx deliberately stays alive
+
+        let (done_tx, done_rx) = crossbeam_channel::bounded::<()>(1);
+        std::thread::spawn(move || {
+            let _ = handle.join().unwrap();
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("writer did not exit on sentinel while a sender was still alive");
+
+        let reader = hound::WavReader::open(&wav_path).unwrap();
+        assert_eq!(reader.len(), 480);
     }
 
     #[test]
