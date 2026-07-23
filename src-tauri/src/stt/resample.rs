@@ -40,6 +40,33 @@ impl Resampler {
         }
         out
     }
+
+    /// End-of-stream: process any samples still pending (less than one full
+    /// `BLOCK`) so trailing audio isn't lost. The final partial block is
+    /// zero-padded up to `BLOCK` before being run through the resampler,
+    /// then the output is trimmed to the proportional length so callers
+    /// don't get a block's worth of silence tacked on. Passthrough mode has
+    /// nothing pending (every sample is emitted immediately), so this
+    /// returns empty.
+    pub fn flush(&mut self) -> Vec<f32> {
+        let Some(inner) = self.inner.as_mut() else {
+            return Vec::new();
+        };
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
+        let pending_len = self.pending.len();
+        let mut block = std::mem::take(&mut self.pending);
+        block.resize(BLOCK, 0.0);
+        let Ok(mut frames) = inner.process(&[block], None) else {
+            return Vec::new();
+        };
+        let mut out = frames.remove(0);
+        // Trim proportionally to how much of the padded block was real audio.
+        let keep = out.len() * pending_len / BLOCK;
+        out.truncate(keep);
+        out
+    }
 }
 
 #[cfg(test)]
@@ -60,6 +87,29 @@ mod tests {
         let input = vec![0.25; 4_000];
         let out = r.process(&input);
         assert_eq!(out, input);
+    }
+
+    #[test]
+    fn flush_emits_trailing_partial_block() {
+        let mut r = Resampler::new(48_000).unwrap();
+        // 1.5 blocks worth of input at 48k.
+        let input_len = BLOCK + BLOCK / 2;
+        let out1 = r.process(&vec![0.1; input_len]);
+        let out2 = r.flush();
+        let total = out1.len() + out2.len();
+        // ~1/3 rate ratio (48k -> 16k); allow a block's worth of slack.
+        let expected = input_len / 3;
+        assert!(
+            (total as i64 - expected as i64).abs() < BLOCK as i64,
+            "got {total}, expected ~{expected}"
+        );
+    }
+
+    #[test]
+    fn flush_is_empty_in_passthrough_mode() {
+        let mut r = Resampler::new(16_000).unwrap();
+        r.process(&vec![0.1; 100]);
+        assert!(r.flush().is_empty());
     }
 
     #[test]

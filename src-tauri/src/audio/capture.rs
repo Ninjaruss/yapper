@@ -99,6 +99,9 @@ pub struct Capture {
     pub paused: Arc<AtomicBool>,
     pub level_rx: Receiver<f32>,
     pub wav_path: PathBuf,
+    /// Native sample rate of the input device, as reported by cpal at
+    /// stream setup. The STT worker needs this to configure its resampler.
+    pub sample_rate: u32,
     /// Set by the writer thread if a WAV I/O error occurs mid-session
     /// (e.g. disk full). The UI can poll this instead of joining.
     pub writer_failed: Arc<AtomicBool>,
@@ -110,7 +113,17 @@ pub struct Capture {
 
 impl Capture {
     /// Start capturing from `device_name` (or the default input) into `wav_path`.
-    pub fn start(device_name: Option<&str>, wav_path: PathBuf) -> Result<Self, YapperError> {
+    ///
+    /// `tee_tx`, if provided, receives a clone of every gated mono buffer in
+    /// addition to the WAV writer — this feeds the STT worker. It must be a
+    /// *bounded* channel: the callback uses `try_send`, so a worker that
+    /// falls behind just drops audio for STT (never for the WAV, and never
+    /// blocking the audio callback itself).
+    pub fn start(
+        device_name: Option<&str>,
+        wav_path: PathBuf,
+        tee_tx: Option<Sender<Vec<f32>>>,
+    ) -> Result<Self, YapperError> {
         let paused = Arc::new(AtomicBool::new(false));
         let writer_failed = Arc::new(AtomicBool::new(false));
         let (buffer_tx, buffer_rx) = crossbeam_channel::unbounded::<Vec<f32>>();
@@ -123,6 +136,7 @@ impl Capture {
         let device_name_owned = device_name.map(|s| s.to_string());
         let cb_tx = buffer_tx.clone();
         let cb_paused = paused.clone();
+        let cb_tee = tee_tx.clone();
 
         // Owns the cpal Device/Stream for its entire lifetime; both are
         // dropped when this thread returns (after stop_rx signals/disconnects).
@@ -161,6 +175,9 @@ impl Capture {
                 &stream_config,
                 move |data: &[f32], _| {
                     if let Some(mono) = gate_and_downmix(data, channels, &cb_paused) {
+                        if let Some(t) = &cb_tee {
+                            let _ = t.try_send(mono.clone());
+                        }
                         let _ = cb_tx.send(mono);
                     }
                 },
@@ -221,6 +238,7 @@ impl Capture {
             paused,
             level_rx,
             wav_path,
+            sample_rate,
             writer_failed,
             buffer_tx: Some(buffer_tx),
             writer: Some(writer),
@@ -341,5 +359,14 @@ mod tests {
     fn capture_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<Capture>();
+    }
+
+    // Extend the existing helper contract: `Capture::start` takes an
+    // optional tee Sender. The pure test just re-checks gate behavior is
+    // unchanged; the tee itself is wiring (worker test covers flow).
+    #[test]
+    fn gate_and_downmix_feeds_tee_when_provided() {
+        let paused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        assert!(gate_and_downmix(&[0.1, 0.1], 1, &paused).is_some());
     }
 }

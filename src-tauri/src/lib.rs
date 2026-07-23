@@ -5,7 +5,9 @@ pub mod session;
 pub mod store;
 pub mod stt;
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{Emitter, Manager, State};
@@ -13,7 +15,8 @@ use tauri::{Emitter, Manager, State};
 use audio::capture::Capture;
 use error::YapperError;
 use session::{ClockState, SessionClock};
-use store::{Session, SessionStore};
+use store::{Session, SessionStore, TranscriptSegment};
+use stt::{Segment, TranscribeEngine};
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
@@ -23,10 +26,12 @@ struct ActiveSession {
     id: i64,
     clock: SessionClock,
     capture: Capture,
+    stt_worker: Option<JoinHandle<()>>,
+    stt_failed: Arc<AtomicBool>,
 }
 
 struct AppState {
-    store: SessionStore,
+    store: Arc<SessionStore>,
     active: Mutex<Option<ActiveSession>>,
 }
 
@@ -55,6 +60,27 @@ async fn start_session(
     let started = now_ms();
     let id = state.store.create_session(started, &intent)?;
 
+    // If the Moonshine model is present, build a tee channel + engine up
+    // front so we can pass the tee sender into Capture::start below. If
+    // models are missing or the engine fails to construct, recording must
+    // still proceed without STT (zero-setup / mirror-never-stops principle):
+    // fall back to no tee, no worker.
+    let model_dir = models::model_dir(&app).ok();
+    let engine: Option<Box<dyn TranscribeEngine>> = model_dir.as_ref().and_then(|dir| {
+        if !models::models_present(dir) {
+            return None;
+        }
+        match stt::moonshine::MoonshineEngine::new(dir) {
+            Ok(e) => Some(Box::new(e) as Box<dyn TranscribeEngine>),
+            Err(e) => {
+                eprintln!("stt: MoonshineEngine::new failed, continuing without STT: {e}");
+                None
+            }
+        }
+    });
+    let tee = engine.is_some().then(|| crossbeam_channel::bounded::<Vec<f32>>(256));
+    let tee_tx = tee.as_ref().map(|(tx, _)| tx.clone());
+
     let setup_result = (|| -> Result<Capture, YapperError> {
         // Recordings live somewhere the user can actually find them
         // (~/Music/Yapper on macOS); the hidden app-data dir is only a fallback.
@@ -66,7 +92,7 @@ async fn start_session(
             .map_err(|e| YapperError::Audio(e.to_string()))?;
         std::fs::create_dir_all(&audio_dir)?;
         let wav_path = audio_dir.join(format!("session-{id}.wav"));
-        Capture::start(device_name.as_deref(), wav_path)
+        Capture::start(device_name.as_deref(), wav_path, tee_tx)
     })();
 
     let capture = match setup_result {
@@ -89,7 +115,38 @@ async fn start_session(
         }
     });
 
-    *active = Some(ActiveSession { id, clock: SessionClock::start(started), capture });
+    let stt_failed = Arc::new(AtomicBool::new(false));
+    let stt_worker = if let (Some(engine), Some((_tee_tx, tee_rx))) = (engine, tee) {
+        let (seg_tx, seg_rx) = crossbeam_channel::unbounded::<Segment>();
+        // Forward transcribed segments to the UI, same pattern as the level
+        // forwarder above; exits when the segment channel closes (i.e. once
+        // the worker thread finishes and drops its sender).
+        let emit_app = app.clone();
+        std::thread::spawn(move || {
+            while let Ok(seg) = seg_rx.recv() {
+                let _ = emit_app.emit("transcript:segment", seg);
+            }
+        });
+        Some(stt::worker::spawn_stt_worker(
+            engine,
+            capture.sample_rate,
+            tee_rx,
+            state.store.clone(),
+            id,
+            seg_tx,
+            stt_failed.clone(),
+        ))
+    } else {
+        None
+    };
+
+    *active = Some(ActiveSession {
+        id,
+        clock: SessionClock::start(started),
+        capture,
+        stt_worker,
+        stt_failed,
+    });
     Ok(id)
 }
 
@@ -117,6 +174,8 @@ struct SessionStatus {
     state: String,
     elapsed_ms: i64,
     writer_failed: bool,
+    stt_active: bool,
+    stt_failed: bool,
 }
 
 #[tauri::command]
@@ -131,7 +190,9 @@ fn session_status(state: State<'_, AppState>) -> Result<Option<SessionStatus>, Y
         }
         .to_string(),
         elapsed_ms: s.clock.elapsed_ms(now_ms()),
-        writer_failed: s.capture.writer_failed.load(std::sync::atomic::Ordering::Relaxed),
+        writer_failed: s.capture.writer_failed.load(Ordering::Relaxed),
+        stt_active: s.stt_worker.is_some(),
+        stt_failed: s.stt_failed.load(Ordering::Relaxed),
     }))
 }
 
@@ -153,6 +214,12 @@ async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError>
         final_path.to_string_lossy().as_ref(),
         totals.paused_ms,
     )?;
+    // Join the STT worker after capture.stop(): the tee sender lived in the
+    // (now-stopped) stream thread's callback, so its channel is disconnected
+    // by this point, letting the worker flush trailing audio and exit.
+    if let Some(handle) = s.stt_worker.take() {
+        let _ = handle.join();
+    }
     stop_result?;
     state.store.get_session(s.id).map(with_audio_exists)
 }
@@ -184,6 +251,27 @@ fn forget_session(state: State<'_, AppState>, id: i64) -> Result<(), YapperError
 }
 
 #[tauri::command]
+fn list_segments(state: State<'_, AppState>, session_id: i64) -> Result<Vec<TranscriptSegment>, YapperError> {
+    state.store.list_segments(session_id)
+}
+
+#[tauri::command]
+fn models_ready(app: tauri::AppHandle) -> Result<bool, YapperError> {
+    Ok(models::models_present(&models::model_dir(&app)?))
+}
+
+// Async: `models::ensure_models` is a blocking call (synchronous network I/O
+// and archive extraction), so it must run on a blocking-friendly thread
+// rather than stalling an async worker or, worse, the main thread.
+#[tauri::command]
+async fn ensure_models(app: tauri::AppHandle) -> Result<(), YapperError> {
+    tauri::async_runtime::spawn_blocking(move || models::ensure_models(&app))
+        .await
+        .map_err(|e| YapperError::State(format!("model download task panicked: {e}")))??;
+    Ok(())
+}
+
+#[tauri::command]
 fn reveal_session(state: State<'_, AppState>, id: i64) -> Result<(), YapperError> {
     let session = state.store.get_session(id)?;
     let path = session
@@ -202,7 +290,7 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir)?;
             let store = SessionStore::open(&data_dir.join("yapper.db"))
                 .expect("failed to open session store");
-            app.manage(AppState { store, active: Mutex::new(None) });
+            app.manage(AppState { store: Arc::new(store), active: Mutex::new(None) });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -214,7 +302,10 @@ pub fn run() {
             end_session,
             list_sessions,
             reveal_session,
-            forget_session
+            forget_session,
+            list_segments,
+            models_ready,
+            ensure_models
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
