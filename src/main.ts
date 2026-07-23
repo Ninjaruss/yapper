@@ -2,6 +2,7 @@ import "./styles.css";
 import { renderSetup } from "./screens/setup";
 import { renderLive } from "./screens/live";
 import { ipc } from "./ipc";
+import { fmtDuration } from "./format";
 
 const root = document.getElementById("app")!;
 
@@ -14,13 +15,21 @@ async function showLive() {
     // Minimal end-of-take acknowledgment; real recap arrives in Plan 4.
     const sessions = await ipc.listSessions();
     const last = sessions[0];
-    const mins = last?.duration_ms ? Math.round(last.duration_ms / 60000) : 0;
+    const dur = last?.duration_ms != null ? fmtDuration(last.duration_ms) : "?";
     root.innerHTML = `
       <div class="paper-panel">
         <div class="label">Talk saved</div>
-        <p>~${mins} min · audio at <code>${last?.audio_path ?? "?"}</code></p>
-        <button id="again">Back to the desk</button>
+        <p>${dur} · <code>${last?.audio_path ?? "?"}</code></p>
+        <div style="display:flex; gap:10px;">
+          ${last?.audio_path ? `<button id="reveal" class="quiet" style="color:var(--ink); border-color:var(--ink-soft);">Show file</button>` : ""}
+          <button id="again">Back to the desk</button>
+        </div>
       </div>`;
+    if (last?.audio_path) {
+      root.querySelector<HTMLButtonElement>("#reveal")!.onclick = () => {
+        ipc.revealSession(last.id).catch(() => {});
+      };
+    }
     root.querySelector<HTMLButtonElement>("#again")!.onclick = showSetup;
   });
 }

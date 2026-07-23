@@ -54,11 +54,14 @@ async fn start_session(
     let id = state.store.create_session(started, &intent)?;
 
     let setup_result = (|| -> Result<Capture, YapperError> {
+        // Recordings live somewhere the user can actually find them
+        // (~/Music/Yapper on macOS); the hidden app-data dir is only a fallback.
         let audio_dir = app
             .path()
-            .app_data_dir()
-            .map_err(|e| YapperError::Audio(e.to_string()))?
-            .join("audio");
+            .audio_dir()
+            .map(|d| d.join("Yapper"))
+            .or_else(|_| app.path().app_data_dir().map(|d| d.join("audio")))
+            .map_err(|e| YapperError::Audio(e.to_string()))?;
         std::fs::create_dir_all(&audio_dir)?;
         let wav_path = audio_dir.join(format!("session-{id}.wav"));
         Capture::start(device_name.as_deref(), wav_path)
@@ -157,6 +160,16 @@ fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>, YapperError
     state.store.list_sessions()
 }
 
+#[tauri::command]
+fn reveal_session(state: State<'_, AppState>, id: i64) -> Result<(), YapperError> {
+    let session = state.store.get_session(id)?;
+    let path = session
+        .audio_path
+        .ok_or_else(|| YapperError::State("no audio file recorded for this session".into()))?;
+    tauri_plugin_opener::reveal_item_in_dir(&path)
+        .map_err(|e| YapperError::State(format!("could not show file: {e}")))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -176,7 +189,8 @@ pub fn run() {
             resume_listening,
             session_status,
             end_session,
-            list_sessions
+            list_sessions,
+            reveal_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
