@@ -18,7 +18,7 @@ use analysis::Signal;
 use audio::capture::Capture;
 use error::YapperError;
 use session::{ClockState, SessionClock};
-use store::{Session, SessionStore, TranscriptSegment};
+use store::{Event, Session, SessionStore, TranscriptSegment};
 use stt::{Segment, TranscribeEngine};
 
 /// A completed session must have at least this much actual speaking time
@@ -392,6 +392,11 @@ fn list_segments(state: State<'_, AppState>, session_id: i64) -> Result<Vec<Tran
 }
 
 #[tauri::command]
+fn list_events(state: State<'_, AppState>, session_id: i64) -> Result<Vec<Event>, YapperError> {
+    state.store.list_events(session_id)
+}
+
+#[tauri::command]
 fn models_ready(app: tauri::AppHandle) -> Result<bool, YapperError> {
     Ok(models::models_present(&models::model_dir(&app)?))
 }
@@ -460,6 +465,7 @@ pub fn run() {
             reveal_session,
             forget_session,
             list_segments,
+            list_events,
             models_ready,
             ensure_models,
             export_transcript

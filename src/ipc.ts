@@ -14,6 +14,8 @@ export interface Session {
   audio_path: string | null;
   duration_ms: number | null;
   paused_ms: number;
+  filler_count: number | null;
+  word_count: number | null;
   audio_exists: boolean;
   segment_count: number;
 }
@@ -33,6 +35,15 @@ export interface TranscriptSegment {
   start_ms: number;
   end_ms: number;
   text: string;
+}
+
+export interface YapperEvent {
+  id: number;
+  session_id: number;
+  at_ms: number;
+  kind: string;
+  note: string;
+  user_feedback: string | null;
 }
 
 export interface Segment {
@@ -69,6 +80,8 @@ export const ipc = {
   forgetSession: (id: number) => invoke<void>("forget_session", { id }),
   listSegments: (sessionId: number) =>
     invoke<TranscriptSegment[]>("list_segments", { sessionId }),
+  listEvents: (sessionId: number) =>
+    invoke<YapperEvent[]>("list_events", { sessionId }),
   modelsReady: () => invoke<boolean>("models_ready"),
   ensureModels: () => invoke<void>("ensure_models"),
   exportTranscript: (id: number) => invoke<string>("export_transcript", { id }),
