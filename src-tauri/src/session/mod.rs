@@ -1,5 +1,6 @@
 //! Pure session lifecycle clock. No I/O, no system time — callers pass
 //! timestamps in, which keeps every path deterministic under test.
+//! Callers must ensure timestamps are monotonically increasing per session.
 
 use crate::error::YapperError;
 
@@ -67,6 +68,7 @@ impl SessionClock {
         }
     }
 
+    /// Finalize the session. Can be called from Recording or Paused state.
     pub fn end(&mut self, now_ms: i64) -> SessionTotals {
         let paused_ms = self.paused_ms(now_ms);
         self.state = ClockState::Ended;
@@ -115,5 +117,24 @@ mod tests {
         assert_eq!(totals.ended_at_ms, 4000);
         assert_eq!(totals.paused_ms, 2000);
         assert_eq!(c.state(), ClockState::Ended);
+    }
+
+    #[test]
+    fn end_from_recording_without_pause() {
+        let mut c = SessionClock::start(1000);
+        let totals = c.end(6000);
+        assert_eq!(totals.ended_at_ms, 6000);
+        assert_eq!(totals.paused_ms, 0);
+    }
+
+    #[test]
+    fn multiple_pause_resume_cycles_accumulate_correctly() {
+        let mut c = SessionClock::start(1000);
+        c.pause(2000).unwrap();
+        c.resume(4000).unwrap();
+        c.pause(5000).unwrap();
+        c.resume(6000).unwrap();
+        assert_eq!(c.paused_ms(6000), 3000);
+        assert_eq!(c.elapsed_ms(6000), 2000);
     }
 }
