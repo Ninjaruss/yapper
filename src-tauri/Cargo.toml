@@ -27,7 +27,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 cpal = "0.15"
 hound = "3.5"
 crossbeam-channel = "0.5"
-sherpa-rs = "0.6.8"
+sherpa-rs = { version = "0.6.8", default-features = false, features = ["download-binaries"] }
 rubato = "0.16"
 
 [dev-dependencies]
