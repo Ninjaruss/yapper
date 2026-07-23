@@ -82,6 +82,14 @@ pub fn spawn_stt_worker(
             };
 
         for chunk in rx.iter() {
+            // Empty buffer = shutdown sentinel from `Capture::stop()`. This
+            // loop must NOT rely on channel disconnection alone: a zombie
+            // CoreAudio callback (see `capture.rs`) can keep its tee Sender
+            // clone alive forever, which would otherwise park this thread —
+            // and `end_session` joins it while holding the app's state lock.
+            if chunk.is_empty() {
+                break;
+            }
             let sixteen_k = resampler.process(&chunk);
             for utterance in vad.push(&sixteen_k) {
                 handle_utterance(&mut engine, &store, &seg_tx, &stt_failed, utterance);
@@ -157,10 +165,16 @@ mod tests {
 
     #[test]
     fn engine_error_sets_flag_and_keeps_draining() {
-        struct FailingEngine;
+        // Fails twice in a row (two separate utterances), asserting the
+        // worker keeps draining past *both* failures rather than only
+        // tolerating a single one.
+        struct FailingEngine {
+            calls: usize,
+        }
         impl TranscribeEngine for FailingEngine {
             fn transcribe(&mut self, _samples_16k: &[f32]) -> Result<String, crate::error::YapperError> {
-                Err(crate::error::YapperError::Audio("boom".into()))
+                self.calls += 1;
+                Err(crate::error::YapperError::Audio(format!("boom #{}", self.calls)))
             }
         }
 
@@ -168,10 +182,14 @@ mod tests {
         let sid = store.create_session(0, "").unwrap();
         let (tx, rx) = crossbeam_channel::bounded::<Vec<f32>>(256);
         let (seg_tx, seg_rx) = crossbeam_channel::unbounded();
-        let engine = Box::new(FailingEngine);
+        let engine = Box::new(FailingEngine { calls: 0 });
         let stt_failed = Arc::new(AtomicBool::new(false));
         let handle = spawn_stt_worker(engine, 16_000, rx, store.clone(), sid, seg_tx, stt_failed.clone());
 
+        // First utterance.
+        tx.send(vec![0.3; 16_000]).unwrap();
+        tx.send(vec![0.0; 16_000]).unwrap();
+        // Second utterance.
         tx.send(vec![0.3; 16_000]).unwrap();
         tx.send(vec![0.0; 16_000]).unwrap();
         drop(tx);
@@ -180,5 +198,40 @@ mod tests {
         assert!(stt_failed.load(Ordering::Relaxed));
         assert!(store.list_segments(sid).unwrap().is_empty());
         assert!(seg_rx.try_recv().is_err());
+    }
+
+    // Regression test mirroring capture.rs's
+    // `writer_exits_on_sentinel_even_with_live_sender`: the worker must not
+    // depend on the tee channel disconnecting (every Sender dropping) — a
+    // zombie CoreAudio callback can hold a clone alive forever, so it must
+    // exit on an explicit empty-Vec sentinel instead.
+    #[test]
+    fn worker_exits_on_sentinel_even_with_live_sender() {
+        let store = Arc::new(crate::store::SessionStore::open_in_memory().unwrap());
+        let sid = store.create_session(0, "").unwrap();
+        let (tx, rx) = crossbeam_channel::bounded::<Vec<f32>>(256);
+        let (seg_tx, seg_rx) = crossbeam_channel::unbounded();
+        let engine = Box::new(MockEngine::new(vec!["sentinel utterance".into()]));
+        let stt_failed = Arc::new(AtomicBool::new(false));
+        let handle = spawn_stt_worker(engine, 16_000, rx, store.clone(), sid, seg_tx, stt_failed.clone());
+
+        tx.send(vec![0.3; 16_000]).unwrap(); // 1s speech
+        tx.send(vec![0.0; 16_000]).unwrap(); // 1s silence -> utterance closes
+        tx.send(Vec::new()).unwrap(); // shutdown sentinel; tx deliberately stays alive
+
+        let (done_tx, done_rx) = crossbeam_channel::bounded::<()>(1);
+        std::thread::spawn(move || {
+            handle.join().unwrap();
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("worker did not exit on sentinel while a sender was still alive");
+
+        let segs = store.list_segments(sid).unwrap();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, "sentinel utterance");
+        assert!(seg_rx.try_recv().is_ok());
+        assert!(!stt_failed.load(Ordering::Relaxed));
     }
 }

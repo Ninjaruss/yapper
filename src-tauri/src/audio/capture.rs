@@ -106,6 +106,13 @@ pub struct Capture {
     /// (e.g. disk full). The UI can poll this instead of joining.
     pub writer_failed: Arc<AtomicBool>,
     buffer_tx: Option<Sender<Vec<f32>>>,
+    /// The original (outer) tee sender, kept alive on `Capture` itself so
+    /// `stop()` can send an explicit shutdown sentinel — mirrors why
+    /// `buffer_tx` is kept: relying solely on the callback's clone (`cb_tee`)
+    /// dropping is not safe, since a zombie CoreAudio callback can keep that
+    /// clone alive forever, and without a sentinel the STT worker's `rx.iter()`
+    /// would then block forever waiting for disconnect.
+    tee_tx: Option<Sender<Vec<f32>>>,
     writer: Option<JoinHandle<Result<(), YapperError>>>,
     stop_tx: Option<Sender<()>>,
     stream_thread: Option<JoinHandle<()>>,
@@ -241,6 +248,7 @@ impl Capture {
             sample_rate,
             writer_failed,
             buffer_tx: Some(buffer_tx),
+            tee_tx,
             writer: Some(writer),
             stop_tx: Some(stop_tx),
             stream_thread: Some(stream_thread),
@@ -257,7 +265,12 @@ impl Capture {
     ///    is joined;
     /// 3. the writer is told to finish via an in-band empty-buffer sentinel —
     ///    it must never depend on every Sender clone being dropped;
-    /// 4. only then is the writer joined.
+    /// 4. the STT worker (if any) gets the same in-band empty-buffer sentinel
+    ///    via the tee channel, for the same reason — a zombie callback could
+    ///    otherwise keep its `cb_tee` clone alive forever, and the worker's
+    ///    `rx.iter()` would then never see the channel disconnect;
+    /// 5. only then are the writer and (elsewhere, by the caller) the STT
+    ///    worker joined.
     ///
     /// MUST NOT be called on the main thread: step 2's teardown can require
     /// the main run loop to be live (see async commands in lib.rs).
@@ -268,6 +281,13 @@ impl Capture {
             stream_thread
                 .join()
                 .map_err(|_| YapperError::Audio("stream thread panicked".into()))?;
+        }
+        if let Some(tee_tx) = self.tee_tx.take() {
+            // Best-effort: the tee is bounded, but by now the stream thread
+            // has stopped producing, so the STT worker's steady draining
+            // will free capacity for this to land. Even if it doesn't, the
+            // sender's drop right after still severs one live clone.
+            let _ = tee_tx.send(Vec::new());
         }
         if let Some(buffer_tx) = self.buffer_tx.take() {
             let _ = buffer_tx.send(Vec::new()); // sentinel: writer finishes even if a zombie sender survives

@@ -53,31 +53,53 @@ async fn start_session(
     intent: String,
     device_name: Option<String>,
 ) -> Result<i64, YapperError> {
+    // First check: fail fast if a session is already running, without
+    // holding the guard across the `.await` below (a std MutexGuard is not
+    // Send, so holding one across an await point would break this future's
+    // Send bound — a compile error on a multi-threaded async runtime).
+    {
+        let active = state.active.lock().map_err(|_| YapperError::State("state lock poisoned".into()))?;
+        if active.is_some() {
+            return Err(YapperError::State("a session is already running".into()));
+        }
+    }
+
+    // If the Moonshine model is present, load it off the async worker via
+    // `spawn_blocking` (model init does blocking file I/O) *before* touching
+    // any session state. If models are missing or init fails, recording must
+    // still proceed without STT (zero-setup / mirror-never-stops principle).
+    let model_dir = models::model_dir(&app).ok();
+    let engine: Option<Box<dyn TranscribeEngine>> = match model_dir {
+        Some(dir) if models::models_present(&dir) => {
+            match tauri::async_runtime::spawn_blocking(move || stt::moonshine::MoonshineEngine::new(&dir))
+                .await
+            {
+                Ok(Ok(e)) => Some(Box::new(e) as Box<dyn TranscribeEngine>),
+                Ok(Err(e)) => {
+                    eprintln!("stt: MoonshineEngine::new failed, continuing without STT: {e}");
+                    None
+                }
+                Err(join_err) => {
+                    eprintln!("stt: model init task panicked, continuing without STT: {join_err}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+
+    // Second check: another session may have started while we were awaiting
+    // model init above. Re-acquire the lock and re-check before touching any
+    // session state; if one snuck in, bail out (the just-loaded `engine`, if
+    // any, is simply dropped here).
     let mut active = state.active.lock().map_err(|_| YapperError::State("state lock poisoned".into()))?;
     if active.is_some() {
         return Err(YapperError::State("a session is already running".into()));
     }
+
     let started = now_ms();
     let id = state.store.create_session(started, &intent)?;
 
-    // If the Moonshine model is present, build a tee channel + engine up
-    // front so we can pass the tee sender into Capture::start below. If
-    // models are missing or the engine fails to construct, recording must
-    // still proceed without STT (zero-setup / mirror-never-stops principle):
-    // fall back to no tee, no worker.
-    let model_dir = models::model_dir(&app).ok();
-    let engine: Option<Box<dyn TranscribeEngine>> = model_dir.as_ref().and_then(|dir| {
-        if !models::models_present(dir) {
-            return None;
-        }
-        match stt::moonshine::MoonshineEngine::new(dir) {
-            Ok(e) => Some(Box::new(e) as Box<dyn TranscribeEngine>),
-            Err(e) => {
-                eprintln!("stt: MoonshineEngine::new failed, continuing without STT: {e}");
-                None
-            }
-        }
-    });
     let tee = engine.is_some().then(|| crossbeam_channel::bounded::<Vec<f32>>(256));
     let tee_tx = tee.as_ref().map(|(tx, _)| tx.clone());
 
@@ -207,6 +229,15 @@ async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError>
     // WAV is flushed per buffer, so the file is still largely recoverable.
     let wav_path = s.capture.wav_path.clone();
     let stop_result = s.capture.stop();
+    // Join the STT worker immediately after capture.stop(), and before the
+    // fallible DB write below: stop() has already sent the tee's shutdown
+    // sentinel (and disconnected the channel), so the worker flushes
+    // trailing audio and exits here. Joining unconditionally — rather than
+    // after a `?` that might return early — ensures the handle is never
+    // silently dropped on the DB-error path.
+    if let Some(handle) = s.stt_worker.take() {
+        let _ = handle.join();
+    }
     let final_path = stop_result.as_ref().unwrap_or(&wav_path);
     state.store.end_session(
         s.id,
@@ -214,12 +245,6 @@ async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError>
         final_path.to_string_lossy().as_ref(),
         totals.paused_ms,
     )?;
-    // Join the STT worker after capture.stop(): the tee sender lived in the
-    // (now-stopped) stream thread's callback, so its channel is disconnected
-    // by this point, letting the worker flush trailing audio and exit.
-    if let Some(handle) = s.stt_worker.take() {
-        let _ = handle.join();
-    }
     stop_result?;
     state.store.get_session(s.id).map(with_audio_exists)
 }
