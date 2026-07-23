@@ -52,7 +52,12 @@ pub fn spawn_analysis_worker(
             total_fillers += fillers as i64;
 
             // Rhythm first: if both trackers fire on the same segment, keep
-            // only the rhythm signal — one cue at a time.
+            // only the rhythm signal — one cue at a time. This permanently
+            // drops that repetition signal (it is not queued or deferred),
+            // which is intended: a point the user is truly repeating recurs
+            // in later segments and will fire on its own once rhythm isn't
+            // also hot, rather than the two cues competing for the user's
+            // attention in the same instant.
             let rhythm_signal = rhythm.push(segment.start_ms, words, fillers);
             let repetition_signal = repetition.push(segment_id, segment.start_ms, &segment.text);
             let signal = rhythm_signal.or(repetition_signal);

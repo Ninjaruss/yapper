@@ -185,7 +185,7 @@ async fn start_session(
         let emit_app = app.clone();
         std::thread::spawn(move || {
             while let Ok(sig) = signal_rx.recv() {
-                let _ = emit_app.emit("signal", &sig);
+                let _ = emit_app.emit("analysis:signal", &sig);
             }
         });
 
@@ -305,20 +305,33 @@ async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError>
     state.store.get_session(s.id).map(with_audio_exists)
 }
 
-/// Roll this session's filler/word rates into the running baseline, if it
-/// had a transcript and at least `MIN_SPEAKING_MS_FOR_BASELINE` of actual
-/// speaking time (duration minus paused time) — short sessions produce
-/// noisy per-minute rates that would poison the baseline.
+/// Pure gate for whether a session's stats should be folded into the
+/// baseline: must have an actual transcript (`word_count` present AND
+/// nonzero — a session with STT active but nobody speaking still writes
+/// `Some(0)`, and 0 wpm would drag the rolling mean toward 0 and eventually
+/// make RhythmPace fire on any speech at all) and at least
+/// `MIN_SPEAKING_MS_FOR_BASELINE` of actual speaking time (duration minus
+/// paused time) — short sessions produce noisy per-minute rates.
+fn should_update_baseline(word_count: Option<i64>, duration_ms: Option<i64>, paused_ms: i64) -> bool {
+    let Some(duration_ms) = duration_ms else { return false };
+    match word_count {
+        Some(w) if w > 0 => (duration_ms - paused_ms) >= MIN_SPEAKING_MS_FOR_BASELINE,
+        _ => false,
+    }
+}
+
+/// Roll this session's filler/word rates into the running baseline; see
+/// `should_update_baseline` for the gating conditions.
 fn update_baseline_after_session(store: &Arc<SessionStore>, session_id: i64) -> Result<(), YapperError> {
     let session = store.get_session(session_id)?;
-    let (Some(word_count), Some(duration_ms)) = (session.word_count, session.duration_ms) else {
-        // No transcript (no STT this session, or nothing was ever said).
-        return Ok(());
-    };
-    let speaking_ms = duration_ms - session.paused_ms;
-    if speaking_ms < MIN_SPEAKING_MS_FOR_BASELINE {
+    if !should_update_baseline(session.word_count, session.duration_ms, session.paused_ms) {
         return Ok(());
     }
+    // Gated above, so these are safe to unwrap: `should_update_baseline`
+    // only returns true when both are present and word_count > 0.
+    let word_count = session.word_count.unwrap();
+    let duration_ms = session.duration_ms.unwrap();
+    let speaking_ms = duration_ms - session.paused_ms;
     let filler_count = session.filler_count.unwrap_or(0);
     let minutes = speaking_ms as f64 / 60_000.0;
     let session_fpm = filler_count as f64 / minutes;
@@ -445,4 +458,47 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod baseline_gate_tests {
+    use super::should_update_baseline;
+
+    #[test]
+    fn no_transcript_never_updates() {
+        assert!(!should_update_baseline(None, Some(300_000), 0));
+    }
+
+    #[test]
+    fn zero_word_count_never_updates() {
+        // STT ran but nobody spoke: word_count is Some(0), not None. Must
+        // still be rejected or a silent session drags words_per_min to 0.
+        assert!(!should_update_baseline(Some(0), Some(300_000), 0));
+    }
+
+    #[test]
+    fn enough_speaking_time_updates() {
+        // 300 words over a 2-minute session with no pauses: exactly at the
+        // MIN_SPEAKING_MS_FOR_BASELINE floor.
+        assert!(should_update_baseline(Some(300), Some(120_000), 0));
+    }
+
+    #[test]
+    fn too_little_speaking_time_never_updates() {
+        // 90s of actual speaking (under the 2-minute floor) never updates,
+        // even with a healthy transcript.
+        assert!(!should_update_baseline(Some(300), Some(90_000), 0));
+    }
+
+    #[test]
+    fn paused_time_is_excluded_from_speaking_time() {
+        // 3 minutes of wall-clock duration but 100s paused leaves only 80s
+        // of actual speaking — under the floor.
+        assert!(!should_update_baseline(Some(300), Some(180_000), 100_000));
+    }
+
+    #[test]
+    fn no_duration_never_updates() {
+        assert!(!should_update_baseline(Some(300), None, 0));
+    }
 }
