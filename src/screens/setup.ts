@@ -4,6 +4,11 @@ import { fmtDate, fmtDuration } from "../format";
 
 const REFRESH_MS = 4000;
 
+// Guards against re-kicking the download every time the setup screen
+// re-renders (e.g. returning here after ending a talk) while a previous
+// ensureModels() call from earlier in this app session is still in flight.
+let modelDownloadStarted = false;
+
 export function renderSetup(
   root: HTMLElement,
   onStarted: () => void,
@@ -21,12 +26,87 @@ export function renderSetup(
       </div>
       <p id="error" class="paused-note" role="alert"></p>
     </div>
+    <div id="modelBanner"></div>
     <div id="past" style="margin-top:22px;"></div>
   `;
 
   const mic = root.querySelector<HTMLSelectElement>("#mic")!;
   const errorEl = root.querySelector<HTMLParagraphElement>("#error")!;
   const pastEl = root.querySelector<HTMLElement>("#past")!;
+  const bannerEl = root.querySelector<HTMLElement>("#modelBanner")!;
+
+  // Same ended-flag pattern as live.ts's onLevel: if cleanup() runs before
+  // the listen() promise resolves, unlisten immediately on arrival instead
+  // of leaking the subscription.
+  let modelBannerDone = false;
+  let modelProgressUnlisten: (() => void) | null = null;
+  const stopModelProgressListener = () => {
+    modelBannerDone = true;
+    modelProgressUnlisten?.();
+    modelProgressUnlisten = null;
+  };
+
+  async function initModelBanner(): Promise<void> {
+    let ready: boolean;
+    try {
+      ready = await ipc.modelsReady();
+    } catch {
+      ready = false; // fail-safe: don't block the desk on a status-check error
+    }
+    if (ready) return;
+
+    bannerEl.innerHTML = `
+      <style>
+        @keyframes yapper-model-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.85; } }
+      </style>
+      <div class="paper-panel" style="margin-top:22px;">
+        <div class="label">First run</div>
+        <p id="modelText" class="paused-note" style="margin-bottom:8px;">downloading the listening model (~250 MB, one time) — you can record meanwhile; transcription joins when it's ready</p>
+        <div class="level-meter"><div id="modelBar"></div></div>
+      </div>
+    `;
+    const textEl = bannerEl.querySelector<HTMLElement>("#modelText")!;
+    const barEl = bannerEl.querySelector<HTMLElement>("#modelBar")!;
+
+    ipc.onModelProgress((p) => {
+      if (p.total === 0) {
+        // No Content-Length from the server: indeterminate progress —
+        // full-width bar, pulsing at reduced opacity.
+        barEl.style.width = "100%";
+        barEl.style.opacity = "0.5";
+        barEl.style.animation = "yapper-model-pulse 1.2s ease-in-out infinite";
+      } else {
+        barEl.style.animation = "none";
+        barEl.style.opacity = "1";
+        barEl.style.width = `${Math.min(100, (p.downloaded / p.total) * 100)}%`;
+      }
+    }).then((fn) => {
+      if (modelBannerDone) {
+        fn();
+      } else {
+        modelProgressUnlisten = fn;
+      }
+    });
+
+    if (!modelDownloadStarted) {
+      modelDownloadStarted = true;
+      ipc.ensureModels()
+        .then(() => {
+          stopModelProgressListener();
+          textEl.textContent = "listening model ready";
+          barEl.style.animation = "none";
+          barEl.style.opacity = "1";
+          barEl.style.width = "100%";
+          setTimeout(() => {
+            bannerEl.innerHTML = "";
+          }, 3000);
+        })
+        .catch((e) => {
+          textEl.textContent = `couldn't download the listening model — ${String(e)} — recording still works, transcription won't join until it's downloaded`;
+        });
+    }
+  }
+  initModelBanner();
 
   // Both lists refresh while this screen is visible: devices come and go
   // (bluetooth mics), recordings get deleted in Finder. Selection and
@@ -103,6 +183,7 @@ export function renderSetup(
   const cleanup = () => {
     clearInterval(timer);
     window.removeEventListener("focus", refreshAll);
+    stopModelProgressListener();
   };
 
   root.querySelector<HTMLButtonElement>("#start")!.onclick = async () => {
