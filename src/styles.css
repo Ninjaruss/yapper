@@ -80,3 +80,7 @@ select, textarea {
 
 .elapsed { font-family: var(--mono); font-size: 2.4rem; color: var(--gold-bright); }
 .paused-note { color: var(--ember); font-style: italic; }
+
+/* Repetition-echo glow: the transcript line being echoed, briefly tinted
+   gold (--gold as rgb(217, 169, 46)) then eased back to nothing. */
+.echo-glow { background: rgba(217, 169, 46, 0.25); transition: background 1.5s ease; border-radius: 3px; }

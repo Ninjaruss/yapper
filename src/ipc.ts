@@ -36,9 +36,19 @@ export interface TranscriptSegment {
 }
 
 export interface Segment {
+  id: number;
   start_ms: number;
   end_ms: number;
   text: string;
+}
+
+export type SignalKind = "rhythm_filler" | "rhythm_pace" | "repetition";
+
+export interface Signal {
+  kind: SignalKind;
+  at_ms: number;
+  note: string;
+  echo_of_segment_id: number | null;
 }
 
 export interface ModelProgress {
@@ -66,6 +76,8 @@ export const ipc = {
     listen<number>("audio:level", (e) => cb(e.payload)),
   onSegment: (cb: (s: Segment) => void): Promise<UnlistenFn> =>
     listen<Segment>("transcript:segment", (e) => cb(e.payload)),
+  onSignal: (cb: (s: Signal) => void): Promise<UnlistenFn> =>
+    listen<Signal>("analysis:signal", (e) => cb(e.payload)),
   onModelProgress: (cb: (p: ModelProgress) => void): Promise<UnlistenFn> =>
     listen<ModelProgress>("model:progress", (e) => cb(e.payload)),
 };

@@ -151,14 +151,22 @@ async fn start_session(
     // produces, so it has nothing to do on the no-STT path.
     let mut analysis_worker = None;
     let stt_worker = if let (Some(engine), Some((_tee_tx, tee_rx))) = (engine, tee) {
-        let (seg_tx, seg_rx) = crossbeam_channel::unbounded::<Segment>();
+        let (seg_tx, seg_rx) = crossbeam_channel::unbounded::<(i64, Segment)>();
         // Forward transcribed segments to the UI, same pattern as the level
         // forwarder above; exits when the segment channel closes (i.e. once
-        // the worker thread finishes and drops its sender).
+        // the worker thread finishes and drops its sender). The DB id rides
+        // along so the UI can tag transcript lines with `data-segment-id`
+        // for the repetition-echo glow.
         let emit_app = app.clone();
         std::thread::spawn(move || {
-            while let Ok(seg) = seg_rx.recv() {
-                let _ = emit_app.emit("transcript:segment", seg);
+            while let Ok((id, seg)) = seg_rx.recv() {
+                let payload = serde_json::json!({
+                    "id": id,
+                    "start_ms": seg.start_ms,
+                    "end_ms": seg.end_ms,
+                    "text": seg.text,
+                });
+                let _ = emit_app.emit("transcript:segment", payload);
             }
         });
 

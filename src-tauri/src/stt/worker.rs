@@ -31,7 +31,7 @@ pub fn spawn_stt_worker(
     rx: Receiver<Vec<f32>>,
     store: Arc<SessionStore>,
     session_id: i64,
-    seg_tx: Sender<Segment>,
+    seg_tx: Sender<(i64, Segment)>,
     stt_failed: Arc<AtomicBool>,
     analysis_tx: Option<crossbeam_channel::Sender<(i64, Segment)>>,
 ) -> JoinHandle<()> {
@@ -53,7 +53,7 @@ pub fn spawn_stt_worker(
         let handle_utterance =
             |engine: &mut Box<dyn TranscribeEngine>,
              store: &Arc<SessionStore>,
-             seg_tx: &Sender<Segment>,
+             seg_tx: &Sender<(i64, Segment)>,
              stt_failed: &Arc<AtomicBool>,
              analysis_tx: &Option<crossbeam_channel::Sender<(i64, Segment)>>,
              utterance: crate::stt::vad::Utterance| {
@@ -80,7 +80,7 @@ pub fn spawn_stt_worker(
                             end_ms,
                             text,
                         };
-                        let _ = seg_tx.send(segment.clone());
+                        let _ = seg_tx.send((segment_id, segment.clone()));
                         if let Some(tx) = analysis_tx {
                             let _ = tx.send((segment_id, segment));
                         }
@@ -144,10 +144,11 @@ mod tests {
         let segs = store.list_segments(sid).unwrap();
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].text, "first utterance");
-        assert!(
-            seg_rx.try_recv().is_ok(),
-            "segment must also be published for the UI"
-        );
+        let (published_id, published_seg) = seg_rx
+            .try_recv()
+            .expect("segment must also be published for the UI");
+        assert_eq!(published_id, segs[0].id, "published id must match the stored segment");
+        assert_eq!(published_seg.text, "first utterance");
         assert!(!stt_failed.load(Ordering::Relaxed));
     }
 
