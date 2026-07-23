@@ -28,3 +28,4 @@ dist-ssr
 node_modules/
 dist/
 src-tauri/target/
+docs/superpowers/fixtures/

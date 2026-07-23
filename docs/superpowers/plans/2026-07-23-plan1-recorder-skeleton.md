@@ -16,6 +16,7 @@
 3. Fast lane + Wisp — rhythm/baseline/repetition, animated wisp, margin notes
 4. Slow lane — llama.cpp `InsightEngine`: outline, questions, wrap-up, recap
 5. Polish — history/trends, model auto-download, opus compression, hardening
+   - carry-over from Plan 1 review: if backend `end_session` fails after `active.take()`, the Live screen has no route back to Setup (detect repeated "no session" status → offer "back to the desk"); consider not consuming the active session until the DB finalize succeeds
 
 ---
 
