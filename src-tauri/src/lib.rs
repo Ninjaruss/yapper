@@ -47,15 +47,26 @@ fn start_session(
     let started = now_ms();
     let id = state.store.create_session(started, &intent)?;
 
-    let audio_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| YapperError::Audio(e.to_string()))?
-        .join("audio");
-    std::fs::create_dir_all(&audio_dir)?;
-    let wav_path = audio_dir.join(format!("session-{id}.wav"));
+    let setup_result = (|| -> Result<Capture, YapperError> {
+        let audio_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| YapperError::Audio(e.to_string()))?
+            .join("audio");
+        std::fs::create_dir_all(&audio_dir)?;
+        let wav_path = audio_dir.join(format!("session-{id}.wav"));
+        Capture::start(device_name.as_deref(), wav_path)
+    })();
 
-    let capture = Capture::start(device_name.as_deref(), wav_path)?;
+    let capture = match setup_result {
+        Ok(capture) => capture,
+        Err(e) => {
+            // Session row was created above; without a working capture it's
+            // an orphan, so clean it up before surfacing the error.
+            let _ = state.store.delete_session(id);
+            return Err(e);
+        }
+    };
 
     // Forward levels to the UI. The forwarder exits when the capture's level
     // channel disconnects at stop(); levels are best-effort (bounded producer).
@@ -94,6 +105,7 @@ struct SessionStatus {
     id: i64,
     state: String,
     elapsed_ms: i64,
+    writer_failed: bool,
 }
 
 #[tauri::command]
@@ -108,6 +120,7 @@ fn session_status(state: State<'_, AppState>) -> Result<Option<SessionStatus>, Y
         }
         .to_string(),
         elapsed_ms: s.clock.elapsed_ms(now_ms()),
+        writer_failed: s.capture.writer_failed.load(std::sync::atomic::Ordering::Relaxed),
     }))
 }
 
@@ -116,13 +129,19 @@ fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError> {
     let mut active = state.active.lock().map_err(|_| YapperError::State("state lock poisoned".into()))?;
     let mut s = active.take().ok_or_else(|| YapperError::State("no session".into()))?;
     let totals = s.clock.end(now_ms());
-    let wav_path = s.capture.stop()?;
+    // Capture the known WAV path before stop() consumes self, so the DB
+    // record can still be written even if stop() itself errors out — the
+    // WAV is flushed per buffer, so the file is still largely recoverable.
+    let wav_path = s.capture.wav_path.clone();
+    let stop_result = s.capture.stop();
+    let final_path = stop_result.as_ref().unwrap_or(&wav_path);
     state.store.end_session(
         s.id,
         totals.ended_at_ms,
-        wav_path.to_string_lossy().as_ref(),
+        final_path.to_string_lossy().as_ref(),
         totals.paused_ms,
     )?;
+    stop_result?;
     state.store.get_session(s.id)
 }
 

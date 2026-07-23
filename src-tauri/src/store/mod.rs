@@ -91,6 +91,12 @@ impl SessionStore {
         Ok(())
     }
 
+    pub fn delete_session(&self, id: i64) -> Result<(), YapperError> {
+        let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
+        conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     pub fn get_session(&self, id: i64) -> Result<Session, YapperError> {
         let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
         Ok(conn.query_row(
@@ -170,5 +176,13 @@ mod tests {
         let all = store.list_sessions().unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].intent, "b");
+    }
+
+    #[test]
+    fn delete_session_removes_row() {
+        let store = open_test_store();
+        let id = store.create_session(1000, "orphan").unwrap();
+        store.delete_session(id).unwrap();
+        assert!(store.get_session(id).is_err());
     }
 }
