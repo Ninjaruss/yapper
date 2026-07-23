@@ -29,6 +29,9 @@ hound = "3.5"
 crossbeam-channel = "0.5"
 sherpa-rs = { version = "0.6.8", default-features = false, features = ["download-binaries"] }
 rubato = "0.16"
+reqwest = { version = "0.12", features = ["blocking"] }
+tar = "0.4"
+bzip2 = "0.5"
 
 [dev-dependencies]
 tempfile = "3"

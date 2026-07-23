@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod error;
+pub mod models;
 pub mod session;
 pub mod store;
 pub mod stt;
