@@ -2,6 +2,7 @@ pub mod audio;
 pub mod error;
 pub mod session;
 pub mod store;
+pub mod stt;
 
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
