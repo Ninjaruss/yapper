@@ -65,7 +65,7 @@ export function renderLive(root: HTMLElement, onEnded: () => void): void {
     if (!status.stt_active) {
       sttStateEl.textContent = "transcribing is off (model not ready) — audio still records";
     } else if (status.stt_failed) {
-      sttStateEl.textContent = "transcription hit trouble — audio still recording";
+      sttStateEl.textContent = "transcription hit trouble earlier this session — audio still recording";
     } else {
       sttStateEl.textContent = "";
     }
