@@ -33,8 +33,14 @@ fn list_input_devices() -> Result<Vec<audio::InputDevice>, YapperError> {
     audio::list_input_devices()
 }
 
+// ASYNC IS LOAD-BEARING on this command and on end_session: Tauri runs
+// non-async commands on the MAIN thread. Capture start/stop block on audio
+// threads, and macOS CoreAudio teardown misbehaves while the main run loop
+// is parked (observed via thread sample: zombie input callback → writer
+// join never returns → app beachball). Async commands run on the runtime's
+// worker threads, keeping the main loop live. Do not remove `async`.
 #[tauri::command]
-fn start_session(
+async fn start_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     intent: String,
@@ -124,8 +130,9 @@ fn session_status(state: State<'_, AppState>) -> Result<Option<SessionStatus>, Y
     }))
 }
 
+// Async for the same main-thread reason as start_session — see comment there.
 #[tauri::command]
-fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError> {
+async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError> {
     let mut active = state.active.lock().map_err(|_| YapperError::State("state lock poisoned".into()))?;
     let mut s = active.take().ok_or_else(|| YapperError::State("no session".into()))?;
     let totals = s.clock.end(now_ms());
