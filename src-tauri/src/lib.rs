@@ -1,3 +1,4 @@
+pub mod analysis;
 pub mod audio;
 pub mod error;
 pub mod export;
