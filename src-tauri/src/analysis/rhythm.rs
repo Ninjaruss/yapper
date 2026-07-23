@@ -26,6 +26,16 @@ const MIN_SPAN_MS: i64 = 20_000;
 /// trusted enough to evaluate.
 const MIN_WORDS: usize = 30;
 
+/// The window must hold at least this many samples before its rates are
+/// trusted enough to evaluate — two samples spaced far apart can otherwise
+/// let one ordinary disfluency moment satisfy hysteresis by itself.
+const MIN_SAMPLES: usize = 3;
+
+/// Sparse windows must not inflate per-minute rates — a floor keeps a
+/// 2-sample window honest by refusing to divide by a span shorter than this,
+/// even once other gates are satisfied.
+const RATE_FLOOR_MS: i64 = 30_000;
+
 /// Filler rate must exceed `baseline.fillers_per_min * FILLER_RATIO` (relative
 /// margin) to count as "hot".
 const FILLER_RATIO: f64 = 1.75;
@@ -76,6 +86,9 @@ impl RhythmTracker {
 
     /// Push one segment's stats (arriving at `at_ms`) and return a signal if
     /// this push completes a sustained, cooldown-eligible hot streak.
+    ///
+    /// Caller invariant: `at_ms` must be non-decreasing across calls — the
+    /// analysis worker consumes segments in arrival order.
     pub fn push(&mut self, at_ms: i64, words: usize, fillers: usize) -> Option<Signal> {
         self.window.push_back(Sample { at_ms, words, fillers });
 
@@ -97,7 +110,11 @@ impl RhythmTracker {
         let total_words: usize = self.window.iter().map(|s| s.words).sum();
         let total_fillers: usize = self.window.iter().map(|s| s.fillers).sum();
 
-        if span_ms < MIN_SPAN_MS || total_words < MIN_WORDS || span_ms <= 0 {
+        if span_ms < MIN_SPAN_MS
+            || total_words < MIN_WORDS
+            || span_ms <= 0
+            || self.window.len() < MIN_SAMPLES
+        {
             // Not enough data to trust a rate yet — no streak carries through
             // a gap in confidence.
             self.filler_streak = 0;
@@ -105,7 +122,11 @@ impl RhythmTracker {
             return None;
         }
 
-        let minutes = span_ms as f64 / 60_000.0;
+        // Floor the denominator so a sparse-but-technically-wide window
+        // (e.g. two samples straddling most of the 60s window) can't inflate
+        // its per-minute rates past what the raw counts would justify.
+        let rate_span_ms = span_ms.max(RATE_FLOOR_MS);
+        let minutes = rate_span_ms as f64 / 60_000.0;
         let words_per_min = total_words as f64 / minutes;
         let fillers_per_min = total_fillers as f64 / minutes;
 
@@ -228,5 +249,22 @@ mod tests {
         let fired = (7..12).find_map(|i| seg(&mut t, i * 5, 25, 0));
         let s = fired.expect("sustained fast pace must fire");
         assert_eq!(s.kind, crate::analysis::SignalKind::RhythmPace);
+    }
+
+    #[test]
+    fn bursty_speech_with_mild_filler_clustering_never_fires() {
+        // Regression: adversarial review found that widely-spaced utterances
+        // (32s apart) keep only 2 samples in the 60s window at a time. With
+        // no sample-count floor, one ordinary disfluency moment (a 2-filler
+        // utterance) could satisfy two-consecutive-hot-pushes by itself,
+        // since it appears in two consecutive tiny-window evaluations.
+        let mut t = RhythmTracker::new(Some(base()));
+        let fillers = [0, 0, 1, 2, 1, 0, 0, 1, 2, 1, 0];
+        for (i, f) in fillers.iter().enumerate() {
+            assert!(
+                seg(&mut t, i as i64 * 32, 15, *f).is_none(),
+                "must never fire on mild, sparse filler clustering (i={i})"
+            );
+        }
     }
 }
