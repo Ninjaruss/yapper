@@ -1,4 +1,5 @@
 import { ipc, type InputDevice } from "../ipc";
+import { escapeHtml } from "../escape";
 
 export function renderSetup(
   root: HTMLElement,
@@ -24,7 +25,7 @@ export function renderSetup(
 
   ipc.listInputDevices().then((devices: InputDevice[]) => {
     mic.innerHTML = devices
-      .map((d) => `<option ${d.is_default ? "selected" : ""}>${d.name}</option>`)
+      .map((d) => `<option value="${escapeHtml(d.name)}" ${d.is_default ? "selected" : ""}>${escapeHtml(d.name)}</option>`)
       .join("");
   }).catch((e) => { errorEl.textContent = String(e); });
 

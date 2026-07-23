@@ -17,10 +17,17 @@ export function renderLive(root: HTMLElement, onEnded: () => void): void {
   const pauseBtn = root.querySelector<HTMLButtonElement>("#pause")!;
 
   let paused = false;
+  let ended = false;
   let unlisten: (() => void) | null = null;
   ipc.onLevel((level) => {
     meterEl.style.width = `${Math.min(100, level * 300)}%`;
-  }).then((fn) => (unlisten = fn));
+  }).then((fn) => {
+    if (ended) {
+      fn();
+    } else {
+      unlisten = fn;
+    }
+  });
 
   const timer = setInterval(async () => {
     const status = await ipc.sessionStatus();
@@ -33,22 +40,36 @@ export function renderLive(root: HTMLElement, onEnded: () => void): void {
   }, 500);
 
   pauseBtn.onclick = async () => {
-    if (paused) {
-      await ipc.resumeListening();
-      pauseBtn.textContent = "Pause listening";
-      stateEl.textContent = "";
-    } else {
-      await ipc.pauseListening();
-      pauseBtn.textContent = "Resume";
-      stateEl.textContent = "asleep — hearing nothing";
+    pauseBtn.disabled = true;
+    try {
+      if (paused) {
+        await ipc.resumeListening();
+        pauseBtn.textContent = "Pause listening";
+        stateEl.textContent = "";
+        paused = false;
+      } else {
+        await ipc.pauseListening();
+        pauseBtn.textContent = "Resume";
+        stateEl.textContent = "asleep — hearing nothing";
+        paused = true;
+      }
+    } catch (e) {
+      stateEl.textContent = String(e);
+    } finally {
+      pauseBtn.disabled = false;
     }
-    paused = !paused;
   };
 
   root.querySelector<HTMLButtonElement>("#end")!.onclick = async () => {
+    try {
+      await ipc.endSession();
+    } catch (e) {
+      stateEl.textContent = String(e);
+      return; // screen stays live; timer/meter keep running
+    }
+    ended = true;
     clearInterval(timer);
     unlisten?.();
-    await ipc.endSession();
     onEnded();
   };
 }
