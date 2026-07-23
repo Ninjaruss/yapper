@@ -96,7 +96,7 @@ UI (webview): companion states, outline paper, dialogue box, recap/history
 | Talking normally | — | Wisp idles: soft burn, gentle sway, tuft drifting (~) |
 | Topic crystallizes | slow | New entry fades into the outline paper, no fanfare |
 | Question ready | slow | Tuft slowly curls into ? · dialogue box updates quietly · sits until replaced |
-| Rhythm spike vs baseline | fast | Wisp crackles/gutters, tuft zigzags (⌁); "breathe" = one long swell-and-settle |
+| Rhythm spike vs baseline | fast | Wisp crackles/gutters, tuft zigzags (⌁) + margin note (e.g. "racing a little — a pause is fine"); "breathe" = one long swell-and-settle |
 | Repetition of covered point | fast+slow | The covered outline line glows briefly; tuft may form ↺ |
 | Thinking pause | fast | Wisp stills, flame narrows and holds, tuft trails into … — patient, never impatient |
 | Wind-down detected | fast | Wisp dims to warm ember, drifts toward paper, tuft forms ◠; callback threads on glance |
@@ -142,13 +142,13 @@ A little light/fire spirit — the listener at the desk. Full identity locked th
 | ◠ | time to land it |
 | tall plume | the Shine — you went deep |
 
-**Rule:** one cue at a time; the dialogue box only ever carries actual question text; everything else lives in tuft + strokes + flame behavior. Animated reference implementation: `.superpowers/brainstorm/16741-1784792098/content/wisp-animated-v3.html`.
+**Rule:** one cue at a time; the dialogue box only ever carries actual question text. Coaching signals (rhythm, repetition, wrap-up) may add a **margin note** — one short line of small handwritten-style ink appearing beside the wisp, gently worded and baseline-relative ("racing a little — a pause is fine", "you've made this point — new ground?"), fading after ~10 s. Margin notes never displace a pending question, never stack, and obey the ~90 s rhythm-signal spacing. Everything else lives in tuft + strokes + flame behavior. Animated reference implementation: `.superpowers/brainstorm/16741-1784792098/content/wisp-animated-v3.html`.
 
 **Provenance:** drawn from Remember Rain's motifs — the wisp is kin to the Ghost (flickers on deflection, Shines on commitment) and the Small Flame (Roxana's fire), living in the writer's-desk world. The Shine spreading into the written line = memory as the record of the self.
 
 ## UI
 
-**Design language:** the writer's desk — dark desk surface (deep warm near-black), the outline on cream manuscript paper, gold ink accents, serif type for content. Storybook warmth × manga-ink structure: hard borders and clear hierarchy on the paper elements, soft light for the wisp. Kin to ninjaruss.net's novel desk (gold/black/brown, paper for story, ink for meta) without being a clone of the P4G site aesthetic.
+**Design language:** the writer's desk, **Candlelit Study finish** — warm wood-brown desk with a pool of light radiating from where the wisp sits, aged parchment paper, gold ink accents, serif type for content. Storybook warmth × manga-ink structure: hard borders and clear hierarchy on the paper elements, soft light for the wisp. Kin to ninjaruss.net's novel desk (gold/black/brown, paper for story, ink for meta) without being a clone of the P4G site aesthetic. Contrast is the known risk of this finish — paper/ink contrast must stay high even as the desk glows warm.
 
 **Four screens:**
 
