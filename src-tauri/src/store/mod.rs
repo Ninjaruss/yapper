@@ -16,6 +16,10 @@ pub struct Session {
     pub audio_path: Option<String>,
     pub duration_ms: Option<i64>,
     pub paused_ms: i64,
+    /// Not persisted — computed at the command layer from the filesystem so
+    /// the UI can tell when a recording was deleted out from under us.
+    #[serde(default)]
+    pub audio_exists: bool,
 }
 
 pub struct SessionStore {
@@ -126,6 +130,7 @@ impl SessionStore {
             audio_path: row.get(4)?,
             duration_ms: row.get(5)?,
             paused_ms: row.get(6)?,
+            audio_exists: false, // filesystem check happens at the command layer
         })
     }
 }

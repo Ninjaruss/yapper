@@ -152,12 +152,33 @@ async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError>
         totals.paused_ms,
     )?;
     stop_result?;
-    state.store.get_session(s.id)
+    state.store.get_session(s.id).map(with_audio_exists)
+}
+
+fn with_audio_exists(mut session: Session) -> Session {
+    session.audio_exists = session
+        .audio_path
+        .as_ref()
+        .map(|p| std::path::Path::new(p).exists())
+        .unwrap_or(false);
+    session
 }
 
 #[tauri::command]
 fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>, YapperError> {
-    state.store.list_sessions()
+    Ok(state
+        .store
+        .list_sessions()?
+        .into_iter()
+        .map(with_audio_exists)
+        .collect())
+}
+
+/// Remove a session row whose recording the user no longer wants tracked.
+/// Never touches the audio file itself.
+#[tauri::command]
+fn forget_session(state: State<'_, AppState>, id: i64) -> Result<(), YapperError> {
+    state.store.delete_session(id)
 }
 
 #[tauri::command]
@@ -190,7 +211,8 @@ pub fn run() {
             session_status,
             end_session,
             list_sessions,
-            reveal_session
+            reveal_session,
+            forget_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

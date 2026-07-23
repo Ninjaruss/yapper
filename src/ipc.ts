@@ -14,6 +14,7 @@ export interface Session {
   audio_path: string | null;
   duration_ms: number | null;
   paused_ms: number;
+  audio_exists: boolean;
 }
 
 export interface SessionStatus {
@@ -33,6 +34,7 @@ export const ipc = {
   endSession: () => invoke<Session>("end_session"),
   listSessions: () => invoke<Session[]>("list_sessions"),
   revealSession: (id: number) => invoke<void>("reveal_session", { id }),
+  forgetSession: (id: number) => invoke<void>("forget_session", { id }),
   onLevel: (cb: (level: number) => void): Promise<UnlistenFn> =>
     listen<number>("audio:level", (e) => cb(e.payload)),
 };
