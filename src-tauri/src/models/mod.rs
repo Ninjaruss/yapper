@@ -6,7 +6,7 @@
 //! `std::thread::spawn` so it doesn't stall Tauri's async runtime.
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use tauri::{Emitter, Manager};
 
@@ -55,22 +55,31 @@ pub fn ensure_models(app: &tauri::AppHandle) -> Result<PathBuf, YapperError> {
     let parent = dir.parent().ok_or_else(|| {
         YapperError::Audio("model download failed: model dir has no parent".into())
     })?;
-    std::fs::create_dir_all(parent)?;
+    std::fs::create_dir_all(parent).map_err(|e| {
+        YapperError::Audio(format!("model download failed: could not create model dir: {e}"))
+    })?;
     let part_path = {
         let mut p = dir.clone();
         p.set_extension("part");
         p
     };
 
-    let emit_app = app.clone();
-    download_to_file(MODEL_URL, &part_path, |downloaded, total| {
-        let _ = emit_app.emit(
-            "model:progress",
-            serde_json::json!({"downloaded": downloaded, "total": total}),
-        );
-    })?;
-    unpack_archive(&part_path, &dir)?;
+    // Any failure past this point should not leave a partial .part file
+    // lying around for the next run to trip over.
+    let result = (|| -> Result<(), YapperError> {
+        let emit_app = app.clone();
+        download_to_file(MODEL_URL, &part_path, |downloaded, total| {
+            let _ = emit_app.emit(
+                "model:progress",
+                serde_json::json!({"downloaded": downloaded, "total": total}),
+            );
+        })?;
+        unpack_archive(&part_path, &dir)?;
+        Ok(())
+    })();
+
     let _ = std::fs::remove_file(&part_path);
+    result?;
 
     if !models_present(&dir) {
         return Err(YapperError::Audio(
@@ -130,10 +139,19 @@ fn download_to_file(
     Ok(())
 }
 
+/// True iff every component of `p` is a plain path segment (`Component::Normal`)
+/// — no `..`, no root, no prefix. Used to reject archive entries that would
+/// otherwise escape `dest_dir` via `..` traversal once joined onto it.
+fn is_safe_relative(p: &Path) -> bool {
+    p.components().all(|c| matches!(c, Component::Normal(_)))
+}
+
 /// Unpack a `.tar.bz2` archive into `dest_dir`, stripping the single
 /// top-level directory component the sherpa-onnx release archives use.
 fn unpack_archive(archive_path: &Path, dest_dir: &Path) -> Result<(), YapperError> {
-    std::fs::create_dir_all(dest_dir)?;
+    std::fs::create_dir_all(dest_dir).map_err(|e| {
+        YapperError::Audio(format!("model unpack failed: could not create dest dir: {e}"))
+    })?;
     let file = std::fs::File::open(archive_path).map_err(|e| {
         YapperError::Audio(format!("model unpack failed: could not open archive: {e}"))
     })?;
@@ -155,6 +173,12 @@ fn unpack_archive(archive_path: &Path, dest_dir: &Path) -> Result<(), YapperErro
         let stripped: PathBuf = path.components().skip(1).collect();
         if stripped.as_os_str().is_empty() {
             continue; // the top-level dir entry itself
+        }
+        if !is_safe_relative(&stripped) {
+            return Err(YapperError::Audio(format!(
+                "model unpack failed: unsafe path in archive: {}",
+                path.display()
+            )));
         }
         let dest = dest_dir.join(&stripped);
         entry.unpack(&dest).map_err(|e| {
@@ -180,5 +204,14 @@ mod tests {
             std::fs::write(root.join(f), "x").unwrap();
         }
         assert!(models_present(&root));
+    }
+
+    #[test]
+    fn is_safe_relative_rejects_traversal_and_accepts_normal_paths() {
+        assert!(!is_safe_relative(Path::new("../../evil.txt")));
+        assert!(!is_safe_relative(Path::new("a/../../evil.txt")));
+        assert!(!is_safe_relative(Path::new("/etc/passwd")));
+        assert!(is_safe_relative(Path::new("tokens.txt")));
+        assert!(is_safe_relative(Path::new("sub/dir/file.onnx")));
     }
 }
