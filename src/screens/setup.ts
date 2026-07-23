@@ -147,7 +147,7 @@ export function renderSetup(
   async function refreshPast(): Promise<void> {
     const sessions: Session[] = await ipc.listSessions();
     const key = sessions
-      .map((s) => `${s.id}:${s.duration_ms}:${s.audio_exists}`)
+      .map((s) => `${s.id}:${s.duration_ms}:${s.audio_exists}:${s.segment_count}`)
       .join("|");
     if (key === pastKey) return;
     pastKey = key;
@@ -165,11 +165,15 @@ export function renderSetup(
             ? `<button class="quiet reveal" data-id="${s.id}" style="color:var(--ink); border-color:var(--ink-soft); padding:6px 12px; font-size:0.85rem;">Show file</button>`
             : `<span style="font-style:italic; color:var(--ember); font-size:0.85rem;">file missing</span>
                <button class="quiet forget" data-id="${s.id}" style="color:var(--ink); border-color:var(--ink-soft); padding:6px 12px; font-size:0.85rem;">Forget</button>`;
+          const exportUi = s.segment_count > 0
+            ? `<button class="quiet export" data-id="${s.id}" style="color:var(--ink); border-color:var(--ink-soft); padding:6px 12px; font-size:0.85rem;">Export transcript</button>`
+            : "";
           return `
             <div class="paper-panel" style="display:flex; align-items:center; gap:14px; padding:10px 16px; margin-bottom:8px;">
               <span style="font-family:var(--mono); color:var(--ink-soft); min-width:110px;">${fmtDate(s.started_at_ms)}</span>
               <span style="font-family:var(--mono); min-width:56px;">${dur}</span>
               <span style="flex:1; font-style:italic; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(intent)}</span>
+              ${exportUi}
               ${fileUi}
             </div>`;
         })
@@ -187,6 +191,12 @@ export function renderSetup(
         ipc.forgetSession(Number(btn.dataset.id))
           .then(() => refreshPast())
           .catch((e) => { errorEl.textContent = String(e); });
+    });
+    pastEl.querySelectorAll<HTMLButtonElement>("button.export").forEach((btn) => {
+      btn.onclick = () =>
+        ipc.exportTranscript(Number(btn.dataset.id)).catch((e) => {
+          errorEl.textContent = String(e);
+        });
     });
   }
 

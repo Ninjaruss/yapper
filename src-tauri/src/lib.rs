@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod error;
+pub mod export;
 pub mod models;
 pub mod session;
 pub mod store;
@@ -260,12 +261,16 @@ fn with_audio_exists(mut session: Session) -> Session {
 
 #[tauri::command]
 fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>, YapperError> {
-    Ok(state
+    state
         .store
         .list_sessions()?
         .into_iter()
         .map(with_audio_exists)
-        .collect())
+        .map(|mut session| {
+            session.segment_count = state.store.count_segments(session.id)?;
+            Ok(session)
+        })
+        .collect()
 }
 
 /// Remove a session row whose recording the user no longer wants tracked.
@@ -294,6 +299,26 @@ async fn ensure_models(app: tauri::AppHandle) -> Result<(), YapperError> {
         .await
         .map_err(|e| YapperError::State(format!("model download task panicked: {e}")))??;
     Ok(())
+}
+
+#[tauri::command]
+fn export_transcript(state: State<'_, AppState>, id: i64) -> Result<String, YapperError> {
+    let session = state.store.get_session(id)?;
+    let segments = state.store.list_segments(id)?;
+    if segments.is_empty() {
+        return Err(YapperError::State("no transcript for this session".into()));
+    }
+    let audio_path = session
+        .audio_path
+        .ok_or_else(|| YapperError::State("no audio file for this session".into()))?;
+    let base = std::path::Path::new(&audio_path).with_extension("");
+    let srt_path = base.with_extension("srt");
+    std::fs::write(&srt_path, export::to_srt(&segments))?;
+    std::fs::write(base.with_extension("txt"), export::to_txt(&segments))?;
+    let srt_str = srt_path.to_string_lossy().into_owned();
+    tauri_plugin_opener::reveal_item_in_dir(&srt_str)
+        .map_err(|e| YapperError::State(format!("could not show file: {e}")))?;
+    Ok(srt_str)
 }
 
 #[tauri::command]
@@ -330,7 +355,8 @@ pub fn run() {
             forget_session,
             list_segments,
             models_ready,
-            ensure_models
+            ensure_models,
+            export_transcript
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

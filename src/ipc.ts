@@ -15,6 +15,7 @@ export interface Session {
   duration_ms: number | null;
   paused_ms: number;
   audio_exists: boolean;
+  segment_count: number;
 }
 
 export interface SessionStatus {
@@ -60,6 +61,7 @@ export const ipc = {
     invoke<TranscriptSegment[]>("list_segments", { sessionId }),
   modelsReady: () => invoke<boolean>("models_ready"),
   ensureModels: () => invoke<void>("ensure_models"),
+  exportTranscript: (id: number) => invoke<string>("export_transcript", { id }),
   onLevel: (cb: (level: number) => void): Promise<UnlistenFn> =>
     listen<number>("audio:level", (e) => cb(e.payload)),
   onSegment: (cb: (s: Segment) => void): Promise<UnlistenFn> =>

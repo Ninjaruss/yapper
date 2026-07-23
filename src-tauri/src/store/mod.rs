@@ -20,6 +20,10 @@ pub struct Session {
     /// the UI can tell when a recording was deleted out from under us.
     #[serde(default)]
     pub audio_exists: bool,
+    /// Not queried here — filled in by the command layer via
+    /// `count_segments` so the UI can tell whether a transcript exists.
+    #[serde(default)]
+    pub segment_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -137,6 +141,15 @@ impl SessionStore {
         Ok(conn.last_insert_rowid())
     }
 
+    pub fn count_segments(&self, session_id: i64) -> Result<i64, YapperError> {
+        let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM transcript_segments WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?)
+    }
+
     pub fn list_segments(&self, session_id: i64) -> Result<Vec<TranscriptSegment>, YapperError> {
         let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
         let mut stmt = conn.prepare(
@@ -185,6 +198,7 @@ impl SessionStore {
             duration_ms: row.get(5)?,
             paused_ms: row.get(6)?,
             audio_exists: false, // filesystem check happens at the command layer
+            segment_count: 0,    // filled in by the command layer via count_segments
         })
     }
 }
@@ -264,5 +278,15 @@ mod tests {
         store.add_segment(id, 0, 500, "x").unwrap();
         store.delete_session(id).unwrap();
         assert!(store.list_segments(id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn count_segments_reflects_additions() {
+        let store = open_test_store();
+        let id = store.create_session(1000, "").unwrap();
+        assert_eq!(store.count_segments(id).unwrap(), 0);
+        store.add_segment(id, 0, 500, "x").unwrap();
+        store.add_segment(id, 500, 1000, "y").unwrap();
+        assert_eq!(store.count_segments(id).unwrap(), 2);
     }
 }
