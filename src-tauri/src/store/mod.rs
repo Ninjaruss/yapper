@@ -19,6 +19,7 @@ pub struct Session {
 }
 
 pub struct SessionStore {
+    // Mutex needed: Connection is Send but not Sync; one lock per operation.
     conn: Mutex<Connection>,
 }
 
@@ -42,7 +43,7 @@ impl SessionStore {
     /// Versioned migrations via PRAGMA user_version. Append-only: never edit
     /// an existing migration, add a new numbered one.
     pub fn migrate(&self) -> Result<(), YapperError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version < 1 {
             conn.execute_batch(
@@ -62,7 +63,7 @@ impl SessionStore {
     }
 
     pub fn create_session(&self, started_at_ms: i64, intent: &str) -> Result<i64, YapperError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
         conn.execute(
             "INSERT INTO sessions (started_at_ms, intent) VALUES (?1, ?2)",
             params![started_at_ms, intent],
@@ -77,7 +78,7 @@ impl SessionStore {
         audio_path: &str,
         paused_ms: i64,
     ) -> Result<(), YapperError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
         conn.execute(
             "UPDATE sessions
              SET ended_at_ms = ?2,
@@ -91,7 +92,7 @@ impl SessionStore {
     }
 
     pub fn get_session(&self, id: i64) -> Result<Session, YapperError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
         Ok(conn.query_row(
             "SELECT id, started_at_ms, ended_at_ms, intent, audio_path, duration_ms, paused_ms
              FROM sessions WHERE id = ?1",
@@ -101,7 +102,7 @@ impl SessionStore {
     }
 
     pub fn list_sessions(&self) -> Result<Vec<Session>, YapperError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
         let mut stmt = conn.prepare(
             "SELECT id, started_at_ms, ended_at_ms, intent, audio_path, duration_ms, paused_ms
              FROM sessions ORDER BY started_at_ms DESC",
