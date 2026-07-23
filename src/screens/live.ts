@@ -97,7 +97,12 @@ export function renderLive(root: HTMLElement, onEnded: () => void): void {
       await ipc.endSession();
     } catch (e) {
       stateEl.textContent = String(e);
-      return; // screen stays live; timer/meter keep running
+      // Deliberately not cleaning up here: endSession() failed, so the
+      // screen stays live and the session is presumably still active —
+      // the status-poll timer, level meter, and segment listener must all
+      // keep running so the user can retry End and the transcript keeps
+      // filling in the meantime.
+      return;
     }
     ended = true;
     clearInterval(timer);

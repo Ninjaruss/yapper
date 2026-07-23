@@ -7,12 +7,24 @@ const REFRESH_MS = 4000;
 // Guards against re-kicking the download every time the setup screen
 // re-renders (e.g. returning here after ending a talk) while a previous
 // ensureModels() call from earlier in this app session is still in flight.
+// Reset to false on a failed download so a later visit can retry.
 let modelDownloadStarted = false;
+
+// Module-scope so a re-render of this screen can unsubscribe whatever
+// listener a previous renderSetup() call registered, even though that call's
+// own local variable is no longer reachable.
+let modelProgressUnlisten: (() => void) | null = null;
 
 export function renderSetup(
   root: HTMLElement,
   onStarted: () => void,
 ): void {
+  // Defensive: drop any listener left over from a previous renderSetup()
+  // call before registering a new one below, so listeners never accumulate
+  // across re-renders.
+  modelProgressUnlisten?.();
+  modelProgressUnlisten = null;
+
   root.innerHTML = `
     <h1>Yapper</h1>
     <div class="paper-panel">
@@ -37,9 +49,9 @@ export function renderSetup(
 
   // Same ended-flag pattern as live.ts's onLevel: if cleanup() runs before
   // the listen() promise resolves, unlisten immediately on arrival instead
-  // of leaking the subscription.
+  // of leaking the subscription. (modelProgressUnlisten itself is the
+  // module-scope variable above.)
   let modelBannerDone = false;
-  let modelProgressUnlisten: (() => void) | null = null;
   const stopModelProgressListener = () => {
     modelBannerDone = true;
     modelProgressUnlisten?.();
@@ -102,6 +114,11 @@ export function renderSetup(
           }, 3000);
         })
         .catch((e) => {
+          stopModelProgressListener();
+          // Allow a later visit to this screen to retry the download —
+          // without this, a failed download could never be retried short
+          // of an app restart.
+          modelDownloadStarted = false;
           textEl.textContent = `couldn't download the listening model — ${String(e)} — recording still works, transcription won't join until it's downloaded`;
         });
     }
