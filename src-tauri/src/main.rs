@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    yapper_scaffold_lib::run()
+    yapper_lib::run()
 }
