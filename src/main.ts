@@ -1,4 +1,5 @@
 import "./styles.css";
+import "./wisp.css";
 import { renderSetup } from "./screens/setup";
 import { renderLive } from "./screens/live";
 import { ipc } from "./ipc";

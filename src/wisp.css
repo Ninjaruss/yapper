@@ -1,0 +1,107 @@
+/* Wisp component styles — ported from the approved animated mockup
+   (.superpowers/brainstorm/16741-1784792098/content/wisp-animated-v3.html),
+   scoped to `.wisp` and keyed off `data-state` instead of body-class swaps.
+   Imported directly (not @import) from main.ts. */
+
+.wisp {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.wisp-svg { display: block; }
+
+.wisp-body { transform-origin: 150px 235px; }
+.wisp-inner { transform-origin: 150px 220px; }
+.tuft { opacity: 0; transform-origin: 140px 112px; }
+.face { opacity: 0; }
+
+/* ---- state -> tuft/face visibility (unconditional: swaps even without motion) ---- */
+.wisp[data-state="flowing"] .tuft-wave,
+.wisp[data-state="sleep"] .tuft-wave { opacity: 1; }
+.wisp[data-state="thinking"] .tuft-dots { opacity: 1; }
+.wisp[data-state="hot"] .tuft-zig { opacity: 1; }
+.wisp[data-state="repeat"] .tuft-hook { opacity: 1; }
+.wisp[data-state="sleep"] .tuft-wave { opacity: .4; }
+
+.wisp[data-state="flowing"] .face-calm { opacity: 1; }
+.wisp[data-state="thinking"] .face-closed { opacity: 1; }
+.wisp[data-state="hot"] .face-effort { opacity: 1; }
+.wisp[data-state="repeat"] .face-curious { opacity: 1; }
+.wisp[data-state="sleep"] .face-closed { opacity: .7; }
+
+.wisp[data-state="sleep"] .wisp-body { transform: scale(.45) translateY(140px); }
+.wisp[data-state="sleep"] .wisp-aura { opacity: .25; }
+
+/* ---- margin note: parchment chip beside the SVG ---- */
+.wisp-note {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  margin-left: 10px;
+  transform: translateY(-50%);
+  max-width: 220px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 0.78rem;
+  line-height: 1.3;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  pointer-events: none;
+}
+.wisp-note.visible { opacity: 1; }
+
+/* ---- motion: sway/jitter/flick/aura + crossfade transitions ---- */
+@media (prefers-reduced-motion: no-preference) {
+  .wisp[data-state="flowing"] .wisp-body { animation: wisp-sway 3.2s ease-in-out infinite; }
+  .wisp[data-state="thinking"] .wisp-body { animation: wisp-sway 6.5s ease-in-out infinite; }
+  .wisp[data-state="repeat"] .wisp-body { animation: wisp-sway 3.2s ease-in-out infinite; }
+  .wisp[data-state="hot"] .wisp-body { animation: wisp-jitter .38s linear infinite; }
+  .wisp[data-state="sleep"] .wisp-body { transition: transform 1.2s ease; }
+
+  @keyframes wisp-sway {
+    0%, 100% { transform: rotate(-2.5deg) translateY(0); }
+    50% { transform: rotate(2deg) translateY(-5px); }
+  }
+  @keyframes wisp-jitter {
+    0% { transform: rotate(-1.5deg) translateX(-1.5px); }
+    25% { transform: rotate(2deg) translateX(1px); }
+    50% { transform: rotate(-2.5deg) translateX(-1px); }
+    75% { transform: rotate(1.5deg) translateX(2px); }
+    100% { transform: rotate(-1.5deg) translateX(-1.5px); }
+  }
+
+  .wisp-inner { animation: wisp-flick 1.1s ease-in-out infinite; }
+  .wisp[data-state="thinking"] .wisp-inner { animation-duration: 3.4s; }
+  .wisp[data-state="hot"] .wisp-inner { animation-duration: .3s; }
+  @keyframes wisp-flick {
+    0%, 100% { transform: scale(1, 1); opacity: .95; }
+    50% { transform: scale(.96, 1.05); opacity: 1; }
+  }
+
+  .wisp-aura { animation: wisp-aura 3s ease-in-out infinite; }
+  .wisp[data-state="sleep"] .wisp-aura { animation-play-state: paused; }
+  @keyframes wisp-aura {
+    0%, 100% { opacity: .4; }
+    50% { opacity: .65; }
+  }
+
+  .tuft, .face { transition: opacity .7s ease; }
+
+  .wisp[data-state="repeat"] .tuft-hook { animation: wisp-hook-drift 2.6s ease-in-out infinite; }
+  @keyframes wisp-hook-drift {
+    0%, 100% { transform: scale(1) rotate(-2deg); }
+    50% { transform: scale(1.05) rotate(2deg); }
+  }
+  .wisp[data-state="hot"] .tuft-zig { animation: wisp-zig-shake .3s linear infinite; }
+  @keyframes wisp-zig-shake {
+    0%, 100% { transform: translateX(-1.5px); }
+    50% { transform: translateX(1.5px); }
+  }
+
+  .wisp-note { transition: opacity .4s ease; }
+}
