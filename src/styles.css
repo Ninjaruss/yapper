@@ -1,0 +1,82 @@
+:root {
+  /* Candlelit Study — spec: UI section */
+  --desk: #2b2114;
+  --desk-glow: #4a3a24;
+  --paper: #f2e6c8;
+  --paper-deep: #e6d5ac;
+  --ink: #4a3c26;
+  --ink-soft: #8a7248;
+  --gold: #d9a92e;
+  --gold-bright: #ffe52c;
+  --ember: #e8912c;
+  --meter-bg: rgba(0, 0, 0, 0.4);
+  --serif: Georgia, "Iowan Old Style", serif;
+  --mono: ui-monospace, Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: var(--serif);
+  color: var(--paper);
+  background: radial-gradient(ellipse at 68% 55%, var(--desk-glow), var(--desk) 55%, #1a140c);
+  min-height: 100vh;
+}
+
+.screen { max-width: 900px; margin: 0 auto; padding: 32px 20px; }
+
+.paper-panel {
+  background: linear-gradient(160deg, var(--paper), var(--paper-deep));
+  color: var(--ink);
+  border-radius: 3px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+  padding: 18px 22px;
+}
+
+.label {
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+button {
+  font-family: var(--serif);
+  font-size: 1rem;
+  background: var(--gold);
+  color: var(--ink);
+  border: none;
+  border-radius: 3px;
+  padding: 10px 22px;
+  cursor: pointer;
+}
+button:hover, button:focus-visible { background: var(--gold-bright); }
+button.quiet { background: transparent; color: var(--paper); border: 1px solid var(--ink-soft); }
+button.quiet:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+select, textarea {
+  font-family: var(--serif);
+  width: 100%;
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--ink-soft);
+  border-radius: 3px;
+  padding: 8px 10px;
+}
+
+.level-meter {
+  height: 10px;
+  background: var(--meter-bg);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.level-meter > div {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--gold), var(--ember));
+  transition: width 80ms linear;
+}
+
+.elapsed { font-family: var(--mono); font-size: 2.4rem; color: var(--gold-bright); }
+.paused-note { color: var(--ember); font-style: italic; }
