@@ -9,6 +9,7 @@
   --gold: #d9a92e;
   --gold-bright: #ffe52c;
   --ember: #e8912c;
+  --meter-bg: rgba(0, 0, 0, 0.4);
   --serif: Georgia, "Iowan Old Style", serif;
   --mono: ui-monospace, Menlo, monospace;
 }
@@ -44,7 +45,7 @@ button {
   font-family: var(--serif);
   font-size: 1rem;
   background: var(--gold);
-  color: #2a2216;
+  color: var(--ink);
   border: none;
   border-radius: 3px;
   padding: 10px 22px;
@@ -52,6 +53,7 @@ button {
 }
 button:hover, button:focus-visible { background: var(--gold-bright); }
 button.quiet { background: transparent; color: var(--paper); border: 1px solid var(--ink-soft); }
+button.quiet:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
 
 select, textarea {
   font-family: var(--serif);
@@ -65,7 +67,7 @@ select, textarea {
 
 .level-meter {
   height: 10px;
-  background: rgba(0, 0, 0, 0.4);
+  background: var(--meter-bg);
   border-radius: 5px;
   overflow: hidden;
 }
