@@ -96,14 +96,33 @@ export function renderRecap(
       });
     };
   }
-  root.querySelector<HTMLButtonElement>("#recapBack")!.onclick = onBack;
+  root.querySelector<HTMLButtonElement>("#recapBack")!.onclick = () => {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    onBack();
+  };
 
   // Listen-back player: served through Tauri's asset protocol (scoped to the
   // recordings dirs in tauri.conf.json). WKWebView plays both WAV and FLAC.
   const audioEl = root.querySelector<HTMLAudioElement>("#recapAudio")!;
+  let objectUrl: string | null = null;
+  // WKWebView streams media with byte-range requests, and range responses
+  // through the custom asset protocol arrive subtly wrong (valid files fail
+  // with MEDIA_ERR_DECODE). Fetching the whole file once and playing from a
+  // Blob keeps decoding entirely in-memory and range-free.
+  const loadAudio = (path: string) =>
+    fetch(convertFileSrc(path))
+      .then((r) => {
+        if (!r.ok) throw new Error(`asset fetch ${r.status}`);
+        return r.blob();
+      })
+      .then((blob) => {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        objectUrl = URL.createObjectURL(blob);
+        audioEl.src = objectUrl;
+      });
   if (session.audio_exists && session.audio_path) {
     root.querySelector<HTMLElement>("#recapListenPanel")!.style.display = "";
-    audioEl.src = convertFileSrc(session.audio_path);
+    loadAudio(session.audio_path).catch(() => retryFreshPath());
     // A just-ended session's WAV converts to FLAC in the background and the
     // WAV is then deleted; if playback breaks, refetch the fresh path once.
     // Any other failure (file deleted in Finder, retry also failing) hides
@@ -112,12 +131,13 @@ export function renderRecap(
     const playbackGone = () => {
       root.querySelector<HTMLElement>("#recapListenPanel")!.style.display = "none";
       const code = audioEl.error?.code;
-      // MediaError codes: 2 network (protocol/scope), 3 decode, 4 not-supported (CSP/scheme)
       errorEl.textContent = code
         ? `playback failed (media error ${code}) — transcript still available`
         : "the recording file went missing — transcript still available";
     };
-    audioEl.onerror = () => {
+    // A just-ended session's WAV converts to FLAC in the background and the
+    // WAV is then deleted; on any load failure, refetch the fresh path once.
+    const retryFreshPath = () => {
       if (retried) {
         playbackGone();
         return;
@@ -127,14 +147,15 @@ export function renderRecap(
         .listSessions()
         .then((sessions) => {
           const fresh = sessions.find((s) => s.id === session.id);
-          if (fresh?.audio_path && fresh.audio_path !== session.audio_path) {
-            audioEl.src = convertFileSrc(fresh.audio_path);
+          if (fresh?.audio_path) {
+            loadAudio(fresh.audio_path).catch(playbackGone);
           } else {
             playbackGone();
           }
         })
         .catch(playbackGone);
     };
+    audioEl.onerror = retryFreshPath;
   }
 
   // Transcript panel: every stored segment, timestamped; clicking a line
