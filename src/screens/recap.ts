@@ -1,4 +1,5 @@
-import { ipc, type Session, type OutlineRow, type YapperEvent } from "../ipc";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { ipc, type Session, type OutlineRow, type YapperEvent, type TranscriptSegment } from "../ipc";
 import { fmtDate, fmtDuration } from "../format";
 
 // Human labels for event kinds shown in the "Moments" timeline. Unknown
@@ -37,9 +38,18 @@ export function renderRecap(
       </p>
       <p id="recapIntent" style="font-style:italic; margin:0;"></p>
     </div>
+    <div class="paper-panel" id="recapListenPanel" style="margin-top:16px; display:none;">
+      <div class="label">Listen back</div>
+      <audio id="recapAudio" controls preload="metadata" style="width:100%; margin-top:6px;"></audio>
+    </div>
     <div class="paper-panel" style="margin-top:16px;">
       <div class="label">The shape of it</div>
       <div id="recapOutline"></div>
+    </div>
+    <div class="paper-panel" id="recapTranscriptPanel" style="margin-top:16px; display:none;">
+      <div class="label">Transcript</div>
+      <p class="label" id="recapTranscriptHint" style="text-transform:none; letter-spacing:0; font-style:italic;">every line, timestamped</p>
+      <div id="recapTranscript" style="max-height:40vh; overflow-y:auto;"></div>
     </div>
     <div class="paper-panel" style="margin-top:16px;">
       <div class="label">Moments</div>
@@ -87,6 +97,90 @@ export function renderRecap(
     };
   }
   root.querySelector<HTMLButtonElement>("#recapBack")!.onclick = onBack;
+
+  // Listen-back player: served through Tauri's asset protocol (scoped to the
+  // recordings dirs in tauri.conf.json). WKWebView plays both WAV and FLAC.
+  const audioEl = root.querySelector<HTMLAudioElement>("#recapAudio")!;
+  if (session.audio_exists && session.audio_path) {
+    root.querySelector<HTMLElement>("#recapListenPanel")!.style.display = "";
+    audioEl.src = convertFileSrc(session.audio_path);
+    // A just-ended session's WAV converts to FLAC in the background and the
+    // WAV is then deleted; if playback breaks, refetch the fresh path once.
+    // Any other failure (file deleted in Finder, retry also failing) hides
+    // the player and says so plainly instead of leaving a dead control.
+    let retried = false;
+    const playbackGone = () => {
+      root.querySelector<HTMLElement>("#recapListenPanel")!.style.display = "none";
+      errorEl.textContent = "the recording file went missing — transcript still available";
+    };
+    audioEl.onerror = () => {
+      if (retried) {
+        playbackGone();
+        return;
+      }
+      retried = true;
+      ipc
+        .listSessions()
+        .then((sessions) => {
+          const fresh = sessions.find((s) => s.id === session.id);
+          if (fresh?.audio_path && fresh.audio_path !== session.audio_path) {
+            audioEl.src = convertFileSrc(fresh.audio_path);
+          } else {
+            playbackGone();
+          }
+        })
+        .catch(playbackGone);
+    };
+  }
+
+  // Transcript panel: every stored segment, timestamped; clicking a line
+  // seeks the player (segment timestamps and the recording share the same
+  // speech clock — paused time exists in neither).
+  const transcriptPanel = root.querySelector<HTMLElement>("#recapTranscriptPanel")!;
+  const transcriptEl = root.querySelector<HTMLElement>("#recapTranscript")!;
+  if (session.segment_count > 0) {
+    ipc
+      .listSegments(session.id)
+      .then((segments: TranscriptSegment[]) => {
+        if (segments.length === 0) return;
+        transcriptPanel.style.display = "";
+        if (session.audio_exists) {
+          root.querySelector<HTMLElement>("#recapTranscriptHint")!.textContent =
+            "click a line to jump the playback there";
+        }
+        for (const seg of segments) {
+          const p = document.createElement("p");
+          p.className = "transcript-line";
+          const stamp = document.createElement("span");
+          stamp.className = "transcript-stamp";
+          stamp.textContent = fmtMmSs(seg.start_ms);
+          const text = document.createElement("span");
+          text.textContent = seg.text;
+          p.append(stamp, text);
+          if (session.audio_exists) {
+            // Keyboard-reachable like every other action in the app.
+            p.classList.add("seekable");
+            p.setAttribute("role", "button");
+            p.tabIndex = 0;
+            const seek = () => {
+              audioEl.currentTime = seg.start_ms / 1000;
+              void audioEl.play().catch(() => {});
+            };
+            p.onclick = seek;
+            p.onkeydown = (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                seek();
+              }
+            };
+          }
+          transcriptEl.appendChild(p);
+        }
+      })
+      .catch((e) => {
+        errorEl.textContent = String(e);
+      });
+  }
 
   // Outline panel — same status styling as the live mirror; at recap time
   // every entry has already settled, but status still renders faithfully

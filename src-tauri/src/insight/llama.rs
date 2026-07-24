@@ -95,7 +95,7 @@ impl LlamaEngine {
         let backend = global_backend()?;
 
         let model_params = LlamaModelParams::default().with_n_gpu_layers(1_000_000);
-        let model = LlamaModel::load_from_file(&backend, &path, &model_params)
+        let model = LlamaModel::load_from_file(backend, &path, &model_params)
             .map_err(|e| YapperError::Audio(format!("llm init: model load: {e}")))?;
 
         // Prefer the chat template baked into the GGUF; only a model with
