@@ -14,6 +14,7 @@ let modelDownloadStarted = false;
 // listener a previous renderSetup() call registered, even though that call's
 // own local variable is no longer reachable.
 let modelProgressUnlisten: (() => void) | null = null;
+let modelReadyUnlisten: (() => void) | null = null;
 
 export function renderSetup(
   root: HTMLElement,
@@ -24,6 +25,8 @@ export function renderSetup(
   // across re-renders.
   modelProgressUnlisten?.();
   modelProgressUnlisten = null;
+  modelReadyUnlisten?.();
+  modelReadyUnlisten = null;
 
   root.innerHTML = `
     <h1>Yapper</h1>
@@ -49,13 +52,15 @@ export function renderSetup(
 
   // Same ended-flag pattern as live.ts's onLevel: if cleanup() runs before
   // the listen() promise resolves, unlisten immediately on arrival instead
-  // of leaking the subscription. (modelProgressUnlisten itself is the
-  // module-scope variable above.)
+  // of leaking the subscription. (modelProgressUnlisten/modelReadyUnlisten
+  // themselves are the module-scope variables above.)
   let modelBannerDone = false;
-  const stopModelProgressListener = () => {
+  const stopModelListeners = () => {
     modelBannerDone = true;
     modelProgressUnlisten?.();
     modelProgressUnlisten = null;
+    modelReadyUnlisten?.();
+    modelReadyUnlisten = null;
   };
 
   // Yapper downloads two models, one at a time (STT first, then the LLM) —
@@ -92,6 +97,25 @@ export function renderSetup(
     const textEl = bannerEl.querySelector<HTMLElement>("#modelText")!;
     const barEl = bannerEl.querySelector<HTMLElement>("#modelBar")!;
 
+    // Guards the "models ready" fade so it only ever runs once, whichever
+    // path notices completion first — the model:ready handler below (fires
+    // the instant the last needed model finishes) and ensureModels()'s own
+    // .then() (fires once both downloads have fully returned) land within
+    // moments of each other.
+    let bannerFaded = false;
+    function showModelsReady(): void {
+      if (bannerFaded) return;
+      bannerFaded = true;
+      stopModelListeners();
+      textEl.textContent = "models ready";
+      barEl.style.animation = "none";
+      barEl.style.opacity = "1";
+      barEl.style.width = "100%";
+      setTimeout(() => {
+        bannerEl.innerHTML = "";
+      }, 3000);
+    }
+
     ipc.onModelProgress((p) => {
       textEl.textContent = textForModel(p.model);
       if (p.total === 0) {
@@ -113,21 +137,42 @@ export function renderSetup(
       }
     });
 
+    // model:ready fires per-model, the moment that model's files are
+    // verified on disk — well before ensureModels() as a whole resolves, and
+    // (for whichever model downloads second) before that model's own first
+    // model:progress event, which can lag by up to ~1 MB of download. This
+    // flips the banner text immediately on the STT→LLM handoff instead of
+    // leaving stale "listening model" text up while the LLM download is
+    // already underway, and fades the banner immediately once the last
+    // needed model lands rather than waiting on ensureModels() to resolve.
+    ipc.onModelReady((model) => {
+      if (model === "llm") {
+        showModelsReady();
+      } else if (!ready.llm) {
+        // The model that just finished wasn't the LLM, so per the
+        // sequential STT-then-LLM order in ensure_models, the LLM is next —
+        // but only if it actually needs downloading (it may have already
+        // been present at banner-open time, in which case ensureModels()
+        // resolves right behind this event and showModelsReady() below
+        // handles it).
+        textEl.textContent = textForModel("llm");
+      }
+    }).then((fn) => {
+      if (modelBannerDone) {
+        fn();
+      } else {
+        modelReadyUnlisten = fn;
+      }
+    });
+
     if (!modelDownloadStarted) {
       modelDownloadStarted = true;
       ipc.ensureModels()
         .then(() => {
-          stopModelProgressListener();
-          textEl.textContent = "models ready";
-          barEl.style.animation = "none";
-          barEl.style.opacity = "1";
-          barEl.style.width = "100%";
-          setTimeout(() => {
-            bannerEl.innerHTML = "";
-          }, 3000);
+          showModelsReady();
         })
         .catch((e) => {
-          stopModelProgressListener();
+          stopModelListeners();
           // Allow a later visit to this screen to retry the download —
           // without this, a failed download could never be retried short
           // of an app restart.
@@ -223,7 +268,7 @@ export function renderSetup(
   const cleanup = () => {
     clearInterval(timer);
     window.removeEventListener("focus", refreshAll);
-    stopModelProgressListener();
+    stopModelListeners();
   };
 
   root.querySelector<HTMLButtonElement>("#start")!.onclick = async () => {
