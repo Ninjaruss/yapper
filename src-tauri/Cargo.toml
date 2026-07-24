@@ -54,3 +54,7 @@ llama-cpp-2 = { version = "=0.1.152" }
 name = "insight_spike"
 path = "examples/insight_spike.rs"
 
+[[example]]
+name = "insight_replay"
+path = "examples/insight_replay.rs"
+
