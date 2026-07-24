@@ -38,7 +38,12 @@ fn parse_fixture(text: &str) -> (String, Vec<(i64, String)>) {
             continue;
         }
         // "[m:ss] text"
+        if !line.starts_with('[') {
+            continue;
+        }
         let Some(close) = line.find(']') else { continue };
+        // Safe to slice at byte 1: `starts_with('[')` guarantees the first
+        // byte is the single-byte ASCII '['.
         let stamp = &line[1..close];
         let text = line[close + 1..].trim().to_string();
         let Some((m, s)) = stamp.split_once(':') else {
@@ -74,6 +79,78 @@ fn print_outline_diff(old: &[OutlineEntry], new: &[OutlineEntry]) {
     }
 }
 
+/// Runs one insight pass against `recent`/`elapsed_ms`: build the prompt,
+/// call the engine, parse the result, damp + diff-print the outline, apply
+/// the question/shine/wrapup gates. Shared by the cadence loop and the
+/// final flush pass so both go through identical logic — mirrors
+/// `insight/worker.rs::run_insight_pass`.
+#[allow(clippy::too_many_arguments)]
+fn run_pass(
+    engine: &mut LlamaEngine,
+    intent: &str,
+    outline: &mut Vec<OutlineEntry>,
+    last_question: &mut Option<String>,
+    last_question_at: &mut Option<i64>,
+    recent: &[(i64, String)],
+    elapsed_ms: i64,
+) {
+    let prompt = build_prompt(intent, outline, recent, elapsed_ms);
+    let raw = match engine.insight(&prompt) {
+        Ok(raw) => raw,
+        Err(e) => {
+            println!("  engine error: {e}");
+            return;
+        }
+    };
+    let Some(update) = parse_update(&raw, last_question.as_deref()) else {
+        println!("  unparseable output, skipped: {raw:?}");
+        return;
+    };
+
+    if !update.outline.is_empty() {
+        let damped = guard::damp_labels(outline, &update.outline);
+        for (inc, kept) in update.outline.iter().zip(damped.iter()) {
+            if inc.label != kept.label {
+                println!(
+                    "  outline ✗ {:?} damped rename → kept {:?}",
+                    inc.label, kept.label
+                );
+            }
+        }
+        print_outline_diff(outline, &damped);
+        *outline = damped;
+    }
+
+    match (update.question.as_deref(), update.sparked_by.as_deref()) {
+        (None, _) => {}
+        (Some(q), None) => println!("  question ✗ dropped (no sparked_by): {q:?}"),
+        (Some(q), Some(spark)) => {
+            if !guard::is_grounded(spark, recent) {
+                println!("  question ✗ dropped (ungrounded {spark:?}): {q:?}");
+            } else {
+                let allowed = match *last_question_at {
+                    Some(last) => elapsed_ms - last >= QUESTION_SPACING_MS,
+                    None => elapsed_ms >= FIRST_QUESTION_MIN_ELAPSED_MS,
+                };
+                if !allowed {
+                    println!("  question ✗ dropped (spacing gate): {q:?}");
+                } else {
+                    println!("  question ✓ SHOWN: {q:?}");
+                    println!("           sparked_by {spark:?}");
+                    *last_question = Some(q.to_string());
+                    *last_question_at = Some(elapsed_ms);
+                }
+            }
+        }
+    }
+    if update.shine {
+        println!("  shine    vote yes");
+    }
+    if update.wrapup_ready {
+        println!("  wrapup   vote yes (worker would also gate on elapsed + intent)");
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let fixture_path = args
@@ -102,6 +179,10 @@ fn main() {
     let mut last_question_at: Option<i64> = None;
     let mut buffer: Vec<(i64, String)> = Vec::new();
     let mut next_pass_at = CADENCE_MS;
+    // Elapsed_ms of the last pass that actually fired, so we can tell
+    // whether any segment arrived after it (mirrors the worker's
+    // `new_since_last_call` flag for its own final-flush-on-disconnect).
+    let mut last_fired_pass_at: Option<i64> = None;
 
     for (start_ms, seg_text) in &segments {
         buffer.push((*start_ms, seg_text.clone()));
@@ -117,60 +198,48 @@ fn main() {
             .collect();
 
         println!("\n── pass · {} ──────────────────────────", fmt_mmss(elapsed_ms));
-        let prompt = build_prompt(&intent, &outline, &recent, elapsed_ms);
-        let raw = match engine.insight(&prompt) {
-            Ok(raw) => raw,
-            Err(e) => {
-                println!("  engine error: {e}");
-                continue;
-            }
-        };
-        let Some(update) = parse_update(&raw, last_question.as_deref()) else {
-            println!("  unparseable output, skipped: {raw:?}");
-            continue;
-        };
+        run_pass(
+            &mut engine,
+            &intent,
+            &mut outline,
+            &mut last_question,
+            &mut last_question_at,
+            &recent,
+            elapsed_ms,
+        );
+        last_fired_pass_at = Some(elapsed_ms);
+    }
 
-        if !update.outline.is_empty() {
-            let damped = guard::damp_labels(&outline, &update.outline);
-            for (inc, kept) in update.outline.iter().zip(damped.iter()) {
-                if inc.label != kept.label {
-                    println!(
-                        "  outline ✗ {:?} damped rename → kept {:?}",
-                        inc.label, kept.label
-                    );
-                }
-            }
-            print_outline_diff(&outline, &damped);
-            outline = damped;
-        }
+    // Mirror the worker's disconnect-time final pass: if segments arrived
+    // after the last cadence pass fired, replay one more pass over them so
+    // the fixture's tail (anything after the last 45s boundary) isn't
+    // silently dropped from the replay.
+    if let Some((last_start_ms, _)) = buffer.last() {
+        let has_unseen_tail = match last_fired_pass_at {
+            Some(last) => *last_start_ms > last,
+            None => true,
+        };
+        if has_unseen_tail {
+            let elapsed_ms = *last_start_ms;
+            let recent: Vec<(i64, String)> = buffer
+                .iter()
+                .filter(|(ms, _)| *ms >= elapsed_ms - RECENT_WINDOW_MS)
+                .cloned()
+                .collect();
 
-        match (update.question.as_deref(), update.sparked_by.as_deref()) {
-            (None, _) => {}
-            (Some(q), None) => println!("  question ✗ dropped (no sparked_by): {q:?}"),
-            (Some(q), Some(spark)) => {
-                if !guard::is_grounded(spark, &recent) {
-                    println!("  question ✗ dropped (ungrounded {spark:?}): {q:?}");
-                } else {
-                    let allowed = match last_question_at {
-                        Some(last) => elapsed_ms - last >= QUESTION_SPACING_MS,
-                        None => elapsed_ms >= FIRST_QUESTION_MIN_ELAPSED_MS,
-                    };
-                    if !allowed {
-                        println!("  question ✗ dropped (spacing gate): {q:?}");
-                    } else {
-                        println!("  question ✓ SHOWN: {q:?}");
-                        println!("           sparked_by {spark:?}");
-                        last_question = Some(q.to_string());
-                        last_question_at = Some(elapsed_ms);
-                    }
-                }
-            }
-        }
-        if update.shine {
-            println!("  shine    vote yes");
-        }
-        if update.wrapup_ready {
-            println!("  wrapup   vote yes (worker would also gate on elapsed + intent)");
+            println!(
+                "\n── final pass (session end) · {} ──────────────────────────",
+                fmt_mmss(elapsed_ms)
+            );
+            run_pass(
+                &mut engine,
+                &intent,
+                &mut outline,
+                &mut last_question,
+                &mut last_question_at,
+                &recent,
+                elapsed_ms,
+            );
         }
     }
 
