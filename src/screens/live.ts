@@ -48,6 +48,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
   let ended = false;
   let lastVoiceAt = Date.now();
   const glowTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  let nullStatusCount = 0;
 
   let unlisten: (() => void) | null = null;
   ipc.onLevel((level) => {
@@ -210,7 +211,57 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
 
   const timer = setInterval(async () => {
     const status = await ipc.sessionStatus();
-    if (!status) return;
+    if (!status) {
+      // Track consecutive null statuses: if the backend session is gone
+      // (end_session took it then failed later), every poll returns null
+      // and the user is stuck. After 4 consecutive nulls, show recovery UI.
+      // Note: during normal session, status is never null (session exists);
+      // only accumulates when no session exists. Pre-Begin states never
+      // mount live.ts, so 4-null recovery cannot misfire mid-take.
+      nullStatusCount++;
+      if (nullStatusCount === 4) {
+        // Stop polling and show recovery UI
+        clearInterval(timer);
+        stateEl.textContent = "this take already ended — ";
+        const recoverBtn = document.createElement("button");
+        recoverBtn.textContent = "Back to the desk";
+        recoverBtn.style.marginLeft = "8px";
+        recoverBtn.onclick = async () => {
+          recoverBtn.disabled = true;
+          try {
+            const sessions = await ipc.listSessions();
+            const last = sessions[0];
+            if (!last) {
+              stateEl.textContent = "no sessions found";
+              recoverBtn.disabled = false;
+              return;
+            }
+            // Run cleanup exactly once before calling onEnded
+            ended = true;
+            unlisten?.();
+            segmentUnlisten?.();
+            signalUnlisten?.();
+            outlineUnlisten?.();
+            questionUnlisten?.();
+            shineUnlisten?.();
+            wrapupUnlisten?.();
+            if (shineUnderlineTimer !== undefined) clearTimeout(shineUnderlineTimer);
+            for (const t of glowTimers.values()) clearTimeout(t);
+            glowTimers.clear();
+            wisp.destroy();
+            // Now run the recap flow with the recovered session
+            onEnded(last);
+          } catch (e) {
+            stateEl.textContent = `recovery failed: ${String(e)}`;
+            recoverBtn.disabled = false;
+          }
+        };
+        stateEl.appendChild(recoverBtn);
+      }
+      return;
+    }
+    // Reset counter on any non-null status
+    nullStatusCount = 0;
     const total = Math.floor(status.elapsed_ms / 1000);
     elapsedEl.textContent = `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
     if (status.writer_failed) {

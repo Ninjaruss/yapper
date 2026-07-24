@@ -459,12 +459,20 @@ async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError>
         let _ = handle.join();
     }
     let final_path = stop_result.as_ref().unwrap_or(&wav_path);
-    state.store.end_session(
+    // If both capture.stop() and store.end_session fail, log the stop error
+    // before surfacing the store error (since the ? on stop_result below
+    // would otherwise drop the stop error, making debugging harder).
+    if let Err(store_err) = state.store.end_session(
         s.id,
         totals.ended_at_ms,
         final_path.to_string_lossy().as_ref(),
         totals.paused_ms,
-    )?;
+    ) {
+        if let Err(stop_err) = &stop_result {
+            eprintln!("end_session: capture stop also failed: {stop_err}");
+        }
+        return Err(store_err);
+    }
     stop_result?;
 
     // Baseline learning: after the DB end write so duration/paused_ms exist.
