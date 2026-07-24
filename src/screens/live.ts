@@ -18,16 +18,21 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
       <button id="end">End the talk</button>
     </div>
     <p id="state" class="paused-note" role="status"></p>
-    <div class="paper-panel" style="margin-top:16px;">
-      <div class="label">So far</div>
-      <div id="outline"></div>
-      <div class="label" id="wonderingLabel" style="margin-top:10px; display:none;">Wondering</div>
-      <p id="wondering" style="font-style:italic; display:none;"></p>
-    </div>
-    <div class="paper-panel" style="margin-top:16px;">
-      <div class="label">Transcript</div>
-      <div id="transcript" style="max-height:50vh; overflow-y:auto; font-style:normal;"></div>
-      <p id="sttState" class="paused-note" style="margin-bottom:0;"></p>
+    <div class="live-grid">
+      <div class="live-main">
+        <div class="paper-panel">
+          <div class="label">So far</div>
+          <div id="outline"></div>
+          <div class="label" id="wonderingLabel" style="margin-top:12px; display:none;">Wondering</div>
+          <p id="wondering" class="wondering-chip" style="display:none;"></p>
+        </div>
+        <div class="paper-panel transcript-panel" style="margin-top:16px;">
+          <div class="label">Transcript</div>
+          <div id="transcript" style="max-height:44vh; overflow-y:auto; font-style:normal;"></div>
+          <p id="sttState" class="paused-note" style="margin-bottom:0;"></p>
+        </div>
+      </div>
+      <aside class="wisp-rail" id="wispRail" aria-label="companion"></aside>
     </div>
   `;
 
@@ -42,7 +47,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
   const sttStateEl = root.querySelector<HTMLElement>("#sttState")!;
 
   const wisp = createWisp();
-  root.querySelector(".paper-panel")!.appendChild(wisp.el);
+  root.querySelector<HTMLElement>("#wispRail")!.appendChild(wisp.el);
 
   let paused = false;
   let ended = false;
@@ -280,7 +285,12 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
         ? `${sttStateEl.textContent} · insight resting`
         : "insight resting";
     }
-    if (!status.insight_active && latestOutline.length === 0 && outlineEl.children.length === 0) {
+    if (status.insight_active && latestOutline.length === 0 && outlineEl.children.length === 0) {
+      const p = document.createElement("p");
+      p.className = "outline-intent";
+      p.textContent = "listening for the shape of it…";
+      outlineEl.appendChild(p);
+    } else if (!status.insight_active && latestOutline.length === 0 && outlineEl.children.length === 0) {
       const p = document.createElement("p");
       p.className = "outline-intent";
       p.textContent = "the thinking model is off — mirror only";

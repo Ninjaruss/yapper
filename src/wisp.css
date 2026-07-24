@@ -5,11 +5,26 @@
 
 .wisp {
   position: relative;
-  display: inline-flex;
+  display: flex;
+  flex-direction: column;
   align-items: center;
 }
 
-.wisp-svg { display: block; }
+.wisp-svg {
+  display: block;
+  width: var(--wisp-size, 150px);
+  height: auto;
+}
+
+/* Quiet status word under the flame — descriptive, never judging. */
+.wisp-caption {
+  margin: 2px 0 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 0.82rem;
+  color: #b8a67e;
+  text-align: center;
+}
 
 .wisp-body { transform-origin: 150px 235px; }
 .wisp-inner { transform-origin: 150px 220px; }
@@ -43,12 +58,8 @@
 
 /* ---- margin note: parchment chip beside the SVG ---- */
 .wisp-note {
-  position: absolute;
-  left: 100%;
-  top: 50%;
-  margin-left: 10px;
-  transform: translateY(-50%);
-  max-width: 220px;
+  margin-top: 8px;
+  max-width: 200px;
   padding: 6px 10px;
   border-radius: 4px;
   background: var(--paper);

@@ -5,7 +5,7 @@
   --paper: #f2e6c8;
   --paper-deep: #e6d5ac;
   --ink: #4a3c26;
-  --ink-soft: #8a7248;
+  --ink-soft: #6f5a33;
   --gold: #d9a92e;
   --gold-bright: #ffe52c;
   --ember: #e8912c;
@@ -96,3 +96,51 @@ select, textarea {
 .outline-current { font-weight: bold; color: var(--gold); }
 .outline-intent { opacity: .55; }
 .outline-current.shine-underline { border-bottom-color: var(--gold-bright); }
+
+
+/* ---- live screen layout: the outline is the mirror; the wisp lives on the
+   desk beside the paper (per the approved design), not inside it ---- */
+.live-grid {
+  display: grid;
+  grid-template-columns: 1fr 190px;
+  gap: 20px;
+  align-items: start;
+  margin-top: 16px;
+}
+.live-main { min-width: 0; }
+.wisp-rail {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 6px;
+}
+@media (max-width: 860px) {
+  .live-grid { grid-template-columns: 1fr; }
+  .wisp-rail {
+    position: static;
+    flex-direction: row;
+    justify-content: center;
+    order: -1;
+    --wisp-size: 110px;
+  }
+}
+
+/* The outline reads as the primary surface; the transcript recedes. */
+#outline p { font-size: 1.06rem; }
+.transcript-panel #transcript p {
+  font-size: 0.92rem;
+  color: #5f5138;
+  margin: 5px 0;
+}
+
+/* WONDERING: a parchment chip with a gold spine, per the design language. */
+.wondering-chip {
+  background: var(--paper-deep);
+  border-left: 3px solid var(--gold);
+  border-radius: 3px;
+  padding: 8px 12px;
+  font-style: italic;
+  margin: 6px 0 0;
+}
