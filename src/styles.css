@@ -156,14 +156,30 @@ select, textarea {
   margin: 5px 0;
 }
 
-/* WONDERING: a parchment chip with a gold spine, per the design language. */
+/* WONDERING: a parchment chip with a gold spine. Type matches the outline
+   (it comments on the outline — it must not whisper under it). On arrival
+   the text fades in and the spine glows briefly, then settles (~4s) —
+   glanceable, never demanding. Wrap-up reuses the chip with an EMBER spine
+   ("Worth calling back") so it never masquerades as a question. */
 .wondering-chip {
   background: var(--paper-deep);
   border-left: 3px solid var(--gold);
   border-radius: 3px;
   padding: 8px 12px;
   font-style: italic;
+  font-size: 1.06rem;
   margin: 6px 0 0;
+}
+@keyframes chip-arrive {
+  0% { opacity: 0; border-left-color: var(--gold-bright); box-shadow: 0 0 14px rgba(217, 169, 46, 0.45); }
+  30% { opacity: 1; }
+  100% { opacity: 1; border-left-color: var(--gold); box-shadow: none; }
+}
+.wondering-chip.chip-arriving { animation: chip-arrive 4s ease; }
+.wondering-chip.chip-callback { border-left-color: var(--ember); }
+.wondering-chip.chip-callback.chip-arriving { animation: none; } /* wrap-up arrives quietly */
+@media (prefers-reduced-motion: reduce) {
+  .wondering-chip.chip-arriving { animation: none; }
 }
 
 /* ---- recap transcript: timestamped, click-to-seek ---- */

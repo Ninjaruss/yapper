@@ -143,8 +143,13 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
   ipc.onQuestion((question) => {
     wonderingLabelEl.textContent = "Wondering";
     wonderingLabelEl.style.display = "";
+    wonderingEl.classList.remove("chip-callback", "chip-arriving");
+    // Force a reflow so re-adding the class restarts the CSS animation
+    // even when two questions arrive back to back.
+    void wonderingEl.offsetWidth;
     wonderingEl.textContent = question;
     wonderingEl.style.display = "";
+    wonderingEl.classList.add("chip-arriving");
     wisp.setState("wondering");
   }).then((fn) => {
     if (ended) {
@@ -187,6 +192,8 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     wonderingLabelEl.style.display = "";
     wonderingEl.textContent = worthCallingBack;
     wonderingEl.style.display = "";
+    wonderingEl.classList.remove("chip-arriving");
+    wonderingEl.classList.add("chip-callback");
   }).then((fn) => {
     if (ended) {
       fn();
