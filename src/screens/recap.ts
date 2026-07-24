@@ -109,13 +109,24 @@ export function renderRecap(
   // through the custom asset protocol arrive subtly wrong (valid files fail
   // with MEDIA_ERR_DECODE). Fetching the whole file once and playing from a
   // Blob keeps decoding entirely in-memory and range-free.
+  // WebKit judges blob playability by the blob's MIME type; the asset
+  // protocol's sniffed types (audio/x-flac, octet-stream) get rejected with
+  // MEDIA_ERR_SRC_NOT_SUPPORTED — so stamp the canonical type explicitly.
+  const mimeForPath = (path: string): string => {
+    const ext = path.toLowerCase().split(".").pop();
+    if (ext === "flac") return "audio/flac";
+    if (ext === "wav") return "audio/wav";
+    return "";
+  };
   const loadAudio = (path: string) =>
     fetch(convertFileSrc(path))
       .then((r) => {
         if (!r.ok) throw new Error(`asset fetch ${r.status}`);
-        return r.blob();
+        return r.arrayBuffer();
       })
-      .then((blob) => {
+      .then((buf) => {
+        const mime = mimeForPath(path);
+        const blob = mime ? new Blob([buf], { type: mime }) : new Blob([buf]);
         if (objectUrl) URL.revokeObjectURL(objectUrl);
         objectUrl = URL.createObjectURL(blob);
         audioEl.src = objectUrl;
