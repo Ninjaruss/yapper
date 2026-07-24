@@ -5,8 +5,8 @@
 //! Exempts the immediately preceding segment (natural restatement).
 //! Own cooldown: ≥120s between repetition signals.
 
-use crate::analysis::{Signal, SignalKind};
 use crate::analysis::text::normalize_words;
+use crate::analysis::{Signal, SignalKind};
 use std::collections::HashSet;
 
 /// Window size for shingle generation.
@@ -135,9 +135,21 @@ mod tests {
     #[test]
     fn detects_echo_of_earlier_segment() {
         let mut d = RepetitionDetector::new();
-        d.push(1, 0, "I moved to the city because the job seemed perfect for me back then");
-        d.push(2, 30_000, "totally different topic about my morning coffee routine and stuff");
-        let s = d.push(3, 200_000, "the job seemed perfect for me back then when I moved to the city");
+        d.push(
+            1,
+            0,
+            "I moved to the city because the job seemed perfect for me back then",
+        );
+        d.push(
+            2,
+            30_000,
+            "totally different topic about my morning coffee routine and stuff",
+        );
+        let s = d.push(
+            3,
+            200_000,
+            "the job seemed perfect for me back then when I moved to the city",
+        );
         let sig = s.expect("echo must be detected");
         assert_eq!(sig.echo_of_segment_id, Some(1));
     }
@@ -145,9 +157,20 @@ mod tests {
     #[test]
     fn immediately_previous_segment_is_exempt() {
         let mut d = RepetitionDetector::new();
-        d.push(1, 0, "let me say this again more clearly for the recording right now");
-        let s = d.push(2, 8_000, "let me say this again more clearly for the recording right now");
-        assert!(s.is_none(), "natural restatement of the last sentence must not fire");
+        d.push(
+            1,
+            0,
+            "let me say this again more clearly for the recording right now",
+        );
+        let s = d.push(
+            2,
+            8_000,
+            "let me say this again more clearly for the recording right now",
+        );
+        assert!(
+            s.is_none(),
+            "natural restatement of the last sentence must not fire"
+        );
     }
 
     #[test]
@@ -160,9 +183,31 @@ mod tests {
     #[test]
     fn cooldown_between_repetition_signals() {
         let mut d = RepetitionDetector::new();
-        d.push(1, 0, "alpha beta gamma delta epsilon zeta eta theta iota kappa");
-        d.push(2, 30_000, "one two three four five six seven eight nine ten");
-        assert!(d.push(3, 60_000, "alpha beta gamma delta epsilon zeta eta theta iota kappa").is_some());
-        assert!(d.push(4, 90_000, "one two three four five six seven eight nine ten").is_none(), "within cooldown");
+        d.push(
+            1,
+            0,
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa",
+        );
+        d.push(
+            2,
+            30_000,
+            "one two three four five six seven eight nine ten",
+        );
+        assert!(d
+            .push(
+                3,
+                60_000,
+                "alpha beta gamma delta epsilon zeta eta theta iota kappa"
+            )
+            .is_some());
+        assert!(
+            d.push(
+                4,
+                90_000,
+                "one two three four five six seven eight nine ten"
+            )
+            .is_none(),
+            "within cooldown"
+        );
     }
 }

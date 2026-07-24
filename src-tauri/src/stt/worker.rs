@@ -20,10 +20,11 @@ use crate::stt::{Segment, TranscribeEngine};
 /// Spawn the STT worker thread. `rx` is the tee of mono audio at
 /// `input_rate` fed by the capture callback; the thread exits once `rx`
 /// disconnects (after flushing any trailing audio).
-// One extra plumbing parameter (`analysis_tx`) pushed this past clippy's
-// default arg-count threshold; every argument here is a distinct piece of
-// wiring the thread needs, not accidental sprawl, so allow it instead of
-// bundling into an ad-hoc config struct for a single call site.
+// Two extra plumbing parameters (`analysis_tx`, `insight_tx`) pushed this
+// past clippy's default arg-count threshold; every argument here is a
+// distinct piece of wiring the thread needs, not accidental sprawl, so
+// allow it instead of bundling into an ad-hoc config struct for a single
+// call site.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_stt_worker(
     mut engine: Box<dyn TranscribeEngine>,
@@ -34,6 +35,7 @@ pub fn spawn_stt_worker(
     seg_tx: Sender<(i64, Segment)>,
     stt_failed: Arc<AtomicBool>,
     analysis_tx: Option<crossbeam_channel::Sender<(i64, Segment)>>,
+    insight_tx: Option<crossbeam_channel::Sender<(i64, Segment)>>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         // If the resampler itself fails to construct, there is nothing this
@@ -56,6 +58,7 @@ pub fn spawn_stt_worker(
              seg_tx: &Sender<(i64, Segment)>,
              stt_failed: &Arc<AtomicBool>,
              analysis_tx: &Option<crossbeam_channel::Sender<(i64, Segment)>>,
+             insight_tx: &Option<crossbeam_channel::Sender<(i64, Segment)>>,
              utterance: crate::stt::vad::Utterance| {
                 let text = match engine.transcribe(&utterance.samples) {
                     Ok(t) => t,
@@ -71,8 +74,7 @@ pub fn spawn_stt_worker(
                 // end_ms includes up to ~600ms trailing silence padding
                 // (the VAD's END_SILENCE_MS); acceptable for glanceable UI,
                 // revisit for edit markers in Plan 5.
-                let end_ms =
-                    utterance.start_ms + (utterance.samples.len() * 1000 / 16_000) as i64;
+                let end_ms = utterance.start_ms + (utterance.samples.len() * 1000 / 16_000) as i64;
                 match store.add_segment(session_id, utterance.start_ms, end_ms, &text) {
                     Ok(segment_id) => {
                         let segment = Segment {
@@ -82,6 +84,9 @@ pub fn spawn_stt_worker(
                         };
                         let _ = seg_tx.send((segment_id, segment.clone()));
                         if let Some(tx) = analysis_tx {
+                            let _ = tx.send((segment_id, segment.clone()));
+                        }
+                        if let Some(tx) = insight_tx {
                             let _ = tx.send((segment_id, segment));
                         }
                     }
@@ -103,7 +108,15 @@ pub fn spawn_stt_worker(
             }
             let sixteen_k = resampler.process(&chunk);
             for utterance in vad.push(&sixteen_k) {
-                handle_utterance(&mut engine, &store, &seg_tx, &stt_failed, &analysis_tx, utterance);
+                handle_utterance(
+                    &mut engine,
+                    &store,
+                    &seg_tx,
+                    &stt_failed,
+                    &analysis_tx,
+                    &insight_tx,
+                    utterance,
+                );
             }
         }
 
@@ -111,13 +124,30 @@ pub fn spawn_stt_worker(
         // VAD, then flush whatever utterance the VAD had in flight.
         let tail = resampler.flush();
         for utterance in vad.push(&tail) {
-            handle_utterance(&mut engine, &store, &seg_tx, &stt_failed, &analysis_tx, utterance);
+            handle_utterance(
+                &mut engine,
+                &store,
+                &seg_tx,
+                &stt_failed,
+                &analysis_tx,
+                &insight_tx,
+                utterance,
+            );
         }
         if let Some(utterance) = vad.flush() {
-            handle_utterance(&mut engine, &store, &seg_tx, &stt_failed, &analysis_tx, utterance);
+            handle_utterance(
+                &mut engine,
+                &store,
+                &seg_tx,
+                &stt_failed,
+                &analysis_tx,
+                &insight_tx,
+                utterance,
+            );
         }
-        // Dropping `analysis_tx` here (end of thread scope) is what lets the
-        // analysis worker's channel disconnect and its thread exit.
+        // Dropping `analysis_tx` and `insight_tx` here (end of thread scope)
+        // is what lets the analysis and insight workers' channels
+        // disconnect and their threads exit.
     })
 }
 
@@ -134,7 +164,17 @@ mod tests {
         let (seg_tx, seg_rx) = crossbeam_channel::unbounded();
         let engine = Box::new(MockEngine::new(vec!["first utterance".into()]));
         let stt_failed = Arc::new(AtomicBool::new(false));
-        let handle = spawn_stt_worker(engine, 16_000, rx, store.clone(), sid, seg_tx, stt_failed.clone(), None);
+        let handle = spawn_stt_worker(
+            engine,
+            16_000,
+            rx,
+            store.clone(),
+            sid,
+            seg_tx,
+            stt_failed.clone(),
+            None,
+            None,
+        );
 
         tx.send(vec![0.3; 16_000]).unwrap(); // 1s speech
         tx.send(vec![0.0; 16_000]).unwrap(); // 1s silence -> utterance closes
@@ -147,9 +187,59 @@ mod tests {
         let (published_id, published_seg) = seg_rx
             .try_recv()
             .expect("segment must also be published for the UI");
-        assert_eq!(published_id, segs[0].id, "published id must match the stored segment");
+        assert_eq!(
+            published_id, segs[0].id,
+            "published id must match the stored segment"
+        );
         assert_eq!(published_seg.text, "first utterance");
         assert!(!stt_failed.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn insight_tee_is_independent_of_analysis_tee() {
+        // Both tees must receive the same segment — they are two separate
+        // unbounded channels, not one channel shared/reused between the two
+        // consumers (per the design: "Do NOT reuse the analysis channel").
+        let store = Arc::new(crate::store::SessionStore::open_in_memory().unwrap());
+        let sid = store.create_session(0, "").unwrap();
+        let (tx, rx) = crossbeam_channel::bounded::<Vec<f32>>(256);
+        let (seg_tx, seg_rx) = crossbeam_channel::unbounded();
+        let (analysis_tx, analysis_rx) = crossbeam_channel::unbounded();
+        let (insight_tx, insight_rx) = crossbeam_channel::unbounded();
+        let engine = Box::new(MockEngine::new(vec!["fan-out utterance".into()]));
+        let stt_failed = Arc::new(AtomicBool::new(false));
+        let handle = spawn_stt_worker(
+            engine,
+            16_000,
+            rx,
+            store.clone(),
+            sid,
+            seg_tx,
+            stt_failed.clone(),
+            Some(analysis_tx),
+            Some(insight_tx),
+        );
+
+        tx.send(vec![0.3; 16_000]).unwrap(); // 1s speech
+        tx.send(vec![0.0; 16_000]).unwrap(); // 1s silence -> utterance closes
+        drop(tx);
+        handle.join().unwrap();
+
+        let (_, ui_seg) = seg_rx.try_recv().expect("ui tee must receive the segment");
+        let (_, analysis_seg) = analysis_rx
+            .try_recv()
+            .expect("analysis tee must receive the segment");
+        let (_, insight_seg) = insight_rx
+            .try_recv()
+            .expect("insight tee must receive the segment");
+        assert_eq!(ui_seg.text, "fan-out utterance");
+        assert_eq!(analysis_seg.text, "fan-out utterance");
+        assert_eq!(insight_seg.text, "fan-out utterance");
+
+        // Both tees' senders were dropped at thread exit, so both channels
+        // must now be disconnected (not just empty).
+        assert!(analysis_rx.try_recv().is_err());
+        assert!(insight_rx.try_recv().is_err());
     }
 
     #[test]
@@ -163,7 +253,17 @@ mod tests {
         let (seg_tx, seg_rx) = crossbeam_channel::unbounded();
         let engine = Box::new(MockEngine::new(vec!["tail utterance".into()]));
         let stt_failed = Arc::new(AtomicBool::new(false));
-        let handle = spawn_stt_worker(engine, 48_000, rx, store.clone(), sid, seg_tx, stt_failed.clone(), None);
+        let handle = spawn_stt_worker(
+            engine,
+            48_000,
+            rx,
+            store.clone(),
+            sid,
+            seg_tx,
+            stt_failed.clone(),
+            None,
+            None,
+        );
 
         // 700ms of speech at 48k, never followed by silence.
         tx.send(vec![0.3; 48_000 * 700 / 1000]).unwrap();
@@ -186,9 +286,15 @@ mod tests {
             calls: usize,
         }
         impl TranscribeEngine for FailingEngine {
-            fn transcribe(&mut self, _samples_16k: &[f32]) -> Result<String, crate::error::YapperError> {
+            fn transcribe(
+                &mut self,
+                _samples_16k: &[f32],
+            ) -> Result<String, crate::error::YapperError> {
                 self.calls += 1;
-                Err(crate::error::YapperError::Audio(format!("boom #{}", self.calls)))
+                Err(crate::error::YapperError::Audio(format!(
+                    "boom #{}",
+                    self.calls
+                )))
             }
         }
 
@@ -198,7 +304,17 @@ mod tests {
         let (seg_tx, seg_rx) = crossbeam_channel::unbounded();
         let engine = Box::new(FailingEngine { calls: 0 });
         let stt_failed = Arc::new(AtomicBool::new(false));
-        let handle = spawn_stt_worker(engine, 16_000, rx, store.clone(), sid, seg_tx, stt_failed.clone(), None);
+        let handle = spawn_stt_worker(
+            engine,
+            16_000,
+            rx,
+            store.clone(),
+            sid,
+            seg_tx,
+            stt_failed.clone(),
+            None,
+            None,
+        );
 
         // First utterance.
         tx.send(vec![0.3; 16_000]).unwrap();
@@ -227,7 +343,17 @@ mod tests {
         let (seg_tx, seg_rx) = crossbeam_channel::unbounded();
         let engine = Box::new(MockEngine::new(vec!["sentinel utterance".into()]));
         let stt_failed = Arc::new(AtomicBool::new(false));
-        let handle = spawn_stt_worker(engine, 16_000, rx, store.clone(), sid, seg_tx, stt_failed.clone(), None);
+        let handle = spawn_stt_worker(
+            engine,
+            16_000,
+            rx,
+            store.clone(),
+            sid,
+            seg_tx,
+            stt_failed.clone(),
+            None,
+            None,
+        );
 
         tx.send(vec![0.3; 16_000]).unwrap(); // 1s speech
         tx.send(vec![0.0; 16_000]).unwrap(); // 1s silence -> utterance closes

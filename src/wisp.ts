@@ -1,9 +1,17 @@
 // Wisp: the animated companion. Ported from the approved mockup
 // (.superpowers/brainstorm/16741-1784792098/content/wisp-animated-v3.html).
-// Vocabulary trimmed to the five live states this app uses; visuals live in
+// Vocabulary trimmed to the eight live states this app uses; visuals live in
 // wisp.css, keyed off a `data-state` attribute on the root element.
 
-export type WispState = "flowing" | "thinking" | "hot" | "repeat" | "sleep";
+export type WispState =
+  | "flowing"
+  | "thinking"
+  | "hot"
+  | "repeat"
+  | "sleep"
+  | "wondering"
+  | "shine"
+  | "wrapup";
 
 export interface Wisp {
   el: HTMLElement;
@@ -14,13 +22,15 @@ export interface Wisp {
 
 const HOLD_MS = 4000;
 const REPEAT_REVERT_MS = 6000;
+const SHINE_REVERT_MS = 8000;
 const NOTE_VISIBLE_MS = 10000;
 const NOTE_FADE_MS = 400;
 
 // Static, trusted markup (no user data) — the ported SVG body, face-stroke
 // groups, and tuft variants from the mockup. "hook" is new: a small filled
 // flame-lick curling into a loop (↺), built in the same style as the rest,
-// for the "repeat" state the mockup didn't cover.
+// for the "repeat" state the mockup didn't cover. "tuft-wrap" is likewise
+// new — a calm downward ◠-arc lick, in-style, for "wrapup" (no mockup asset).
 const SVG_MARKUP = `
 <svg viewBox="0 0 300 320" width="84" height="90" class="wisp-svg" aria-hidden="true" focusable="false">
   <circle class="wisp-aura" cx="150" cy="185" r="78" fill="#e8912c" opacity=".045"/>
@@ -50,6 +60,10 @@ const SVG_MARKUP = `
       <path d="M137 184 l11 4" fill="none" stroke="#3a3226" stroke-width="3.4" stroke-linecap="round"/>
       <path d="M165 184 l-11 4" fill="none" stroke="#3a3226" stroke-width="3.4" stroke-linecap="round"/>
     </g>
+    <g class="face face-shine">
+      <path d="M137 189 q6 -7 12 0" fill="none" stroke="#3a3226" stroke-width="3.4" stroke-linecap="round"/>
+      <path d="M153 189 q6 -7 12 0" fill="none" stroke="#3a3226" stroke-width="3.4" stroke-linecap="round"/>
+    </g>
 
     <g class="tuft tuft-wave">
       <path d="M134 114 Q130 94 145 80 Q157 69 172 75 Q160 77 151 88 Q142 99 150 112 Q142 120 134 114 Z" fill="#ffe52c" opacity=".55" stroke="#1a1408" stroke-width="2.2" stroke-linejoin="round"/>
@@ -66,6 +80,16 @@ const SVG_MARKUP = `
     <g class="tuft tuft-hook">
       <path d="M134 114 Q130 100 140 90 Q150 82 148 74 Q146 66 156 66 Q164 66 162 76 Q160 84 150 82 Q142 100 134 114 Z" fill="#ffe52c" opacity=".55" stroke="#1a1408" stroke-width="2.2" stroke-linejoin="round"/>
     </g>
+    <g class="tuft tuft-q">
+      <path d="M134 114 Q130 90 147 78 Q163 67 177 77 Q188 88 177 99 Q170 105 162 101 Q170 97 173 89 Q174 81 164 79 Q152 80 148 92 Q145 103 151 112 Q142 120 134 114 Z" fill="#ffe52c" opacity=".55" stroke="#1a1408" stroke-width="2.2" stroke-linejoin="round"/>
+      <circle cx="159" cy="115" r="3.4" fill="#ffe52c" stroke="#1a1408" stroke-width="1.6"/>
+    </g>
+    <g class="tuft tuft-bloom">
+      <path d="M134 114 Q137 84 139 64 Q140 48 149 38 Q153 52 148 68 Q145 90 152 110 Q143 120 134 114 Z" fill="#fff6c8" opacity=".9" stroke="#1a1408" stroke-width="2.2" stroke-linejoin="round"/>
+    </g>
+    <g class="tuft tuft-wrap">
+      <path d="M134 114 Q142 104 154 106 Q164 108 166 118 Q158 114 150 116 Q142 118 138 124 Q132 120 134 114 Z" fill="#ffcf24" opacity=".5" stroke="#1a1408" stroke-width="2.2" stroke-linejoin="round"/>
+    </g>
   </g>
 </svg>`;
 
@@ -81,17 +105,19 @@ export function createWisp(): Wisp {
 
   let lastAppliedAt = Date.now();
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
-  let repeatTimer: ReturnType<typeof setTimeout> | undefined;
+  // Shared by every state with an auto-revert ("repeat" -> flowing after 6s,
+  // "shine" -> flowing after 8s). "wrapup" has none: it persists.
+  let autoRevertTimer: ReturnType<typeof setTimeout> | undefined;
   let pending: WispState | null = null;
 
   let noteActive = false;
   let noteFadeTimer: ReturnType<typeof setTimeout> | undefined;
   let noteHideTimer: ReturnType<typeof setTimeout> | undefined;
 
-  function clearRepeatTimer() {
-    if (repeatTimer !== undefined) {
-      clearTimeout(repeatTimer);
-      repeatTimer = undefined;
+  function clearAutoRevertTimer() {
+    if (autoRevertTimer !== undefined) {
+      clearTimeout(autoRevertTimer);
+      autoRevertTimer = undefined;
     }
   }
 
@@ -99,19 +125,20 @@ export function createWisp(): Wisp {
     el.dataset.state = s;
     lastAppliedAt = Date.now();
     pending = null;
-    clearRepeatTimer();
-    if (s === "repeat") {
-      repeatTimer = setTimeout(() => {
-        repeatTimer = undefined;
+    clearAutoRevertTimer();
+    const revertMs = s === "repeat" ? REPEAT_REVERT_MS : s === "shine" ? SHINE_REVERT_MS : undefined;
+    if (revertMs !== undefined) {
+      autoRevertTimer = setTimeout(() => {
+        autoRevertTimer = undefined;
         applyState("flowing");
-      }, REPEAT_REVERT_MS);
+      }, revertMs);
     }
   }
 
   function setState(s: WispState) {
     // Any call to setState — even one that ends up queued — supersedes a
-    // pending auto-revert from "repeat".
-    clearRepeatTimer();
+    // pending auto-revert from "repeat"/"shine".
+    clearAutoRevertTimer();
 
     if (s === "sleep") {
       // Sleep is exempt from the min-hold: pause must read unambiguously.
@@ -162,7 +189,7 @@ export function createWisp(): Wisp {
 
   function destroy() {
     if (holdTimer !== undefined) clearTimeout(holdTimer);
-    clearRepeatTimer();
+    clearAutoRevertTimer();
     if (noteFadeTimer !== undefined) clearTimeout(noteFadeTimer);
     if (noteHideTimer !== undefined) clearTimeout(noteHideTimer);
     el.remove();

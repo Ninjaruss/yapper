@@ -78,7 +78,9 @@ pub fn spawn_writer(
                         .map_err(|e| YapperError::Audio(e.to_string()))?;
                 }
                 // Keep headers/data recoverable if we die mid-session.
-                writer.flush().map_err(|e| YapperError::Audio(e.to_string()))?;
+                writer
+                    .flush()
+                    .map_err(|e| YapperError::Audio(e.to_string()))?;
             }
             writer
                 .finalize()
@@ -148,27 +150,28 @@ impl Capture {
         // Owns the cpal Device/Stream for its entire lifetime; both are
         // dropped when this thread returns (after stop_rx signals/disconnects).
         let stream_thread = std::thread::spawn(move || {
-            let setup = (|| -> Result<(cpal::Device, cpal::StreamConfig, u32, usize), YapperError> {
-                let host = cpal::default_host();
-                let device = match device_name_owned.as_deref() {
-                    Some(wanted) => host
-                        .input_devices()
-                        .map_err(|e| YapperError::Audio(e.to_string()))?
-                        .find(|d| d.name().map(|n| n == wanted).unwrap_or(false))
-                        .ok_or_else(|| {
-                            YapperError::Audio(format!("input device '{wanted}' not found"))
-                        })?,
-                    None => host
-                        .default_input_device()
-                        .ok_or_else(|| YapperError::Audio("no default input device".into()))?,
-                };
-                let config = device
-                    .default_input_config()
-                    .map_err(|e| YapperError::Audio(e.to_string()))?;
-                let sample_rate = config.sample_rate().0;
-                let channels = config.channels() as usize;
-                Ok((device, config.into(), sample_rate, channels))
-            })();
+            let setup =
+                (|| -> Result<(cpal::Device, cpal::StreamConfig, u32, usize), YapperError> {
+                    let host = cpal::default_host();
+                    let device = match device_name_owned.as_deref() {
+                        Some(wanted) => host
+                            .input_devices()
+                            .map_err(|e| YapperError::Audio(e.to_string()))?
+                            .find(|d| d.name().map(|n| n == wanted).unwrap_or(false))
+                            .ok_or_else(|| {
+                                YapperError::Audio(format!("input device '{wanted}' not found"))
+                            })?,
+                        None => host
+                            .default_input_device()
+                            .ok_or_else(|| YapperError::Audio("no default input device".into()))?,
+                    };
+                    let config = device
+                        .default_input_config()
+                        .map_err(|e| YapperError::Audio(e.to_string()))?;
+                    let sample_rate = config.sample_rate().0;
+                    let channels = config.channels() as usize;
+                    Ok((device, config.into(), sample_rate, channels))
+                })();
 
             let (device, stream_config, sample_rate, channels) = match setup {
                 Ok(v) => v,
@@ -314,7 +317,13 @@ mod tests {
         let (level_tx, level_rx) = crossbeam_channel::bounded::<f32>(8);
         let writer_failed = Arc::new(AtomicBool::new(false));
 
-        let handle = spawn_writer(wav_path.clone(), 48_000, rx, level_tx, writer_failed.clone());
+        let handle = spawn_writer(
+            wav_path.clone(),
+            48_000,
+            rx,
+            level_tx,
+            writer_failed.clone(),
+        );
 
         // 48k samples = 1 second of audio at half scale
         for _ in 0..100 {

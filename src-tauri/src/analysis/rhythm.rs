@@ -90,7 +90,11 @@ impl RhythmTracker {
     /// Caller invariant: `at_ms` must be non-decreasing across calls — the
     /// analysis worker consumes segments in arrival order.
     pub fn push(&mut self, at_ms: i64, words: usize, fillers: usize) -> Option<Signal> {
-        self.window.push_back(Sample { at_ms, words, fillers });
+        self.window.push_back(Sample {
+            at_ms,
+            words,
+            fillers,
+        });
 
         // Evict samples that have fallen out of the trailing 60s window.
         let cutoff = at_ms - WINDOW_MS;
@@ -130,14 +134,18 @@ impl RhythmTracker {
         let words_per_min = total_words as f64 / minutes;
         let fillers_per_min = total_fillers as f64 / minutes;
 
-        let filler_threshold =
-            (baseline.fillers_per_min * FILLER_RATIO).max(baseline.fillers_per_min + FILLER_ABS_MARGIN);
+        let filler_threshold = (baseline.fillers_per_min * FILLER_RATIO)
+            .max(baseline.fillers_per_min + FILLER_ABS_MARGIN);
         let pace_threshold = baseline.words_per_min * PACE_RATIO;
 
         let filler_hot = fillers_per_min > filler_threshold;
         let pace_hot = words_per_min > pace_threshold;
 
-        self.filler_streak = if filler_hot { self.filler_streak + 1 } else { 0 };
+        self.filler_streak = if filler_hot {
+            self.filler_streak + 1
+        } else {
+            0
+        };
         self.pace_streak = if pace_hot { self.pace_streak + 1 } else { 0 };
 
         let cooldown_ok = match self.last_signal_at_ms {
@@ -184,10 +192,19 @@ mod tests {
     use crate::store::Baseline;
 
     fn base() -> Baseline {
-        Baseline { fillers_per_min: 3.0, words_per_min: 150.0, sessions_counted: 5 }
+        Baseline {
+            fillers_per_min: 3.0,
+            words_per_min: 150.0,
+            sessions_counted: 5,
+        }
     }
 
-    fn seg(t: &mut RhythmTracker, at_s: i64, words: usize, fillers: usize) -> Option<crate::analysis::Signal> {
+    fn seg(
+        t: &mut RhythmTracker,
+        at_s: i64,
+        words: usize,
+        fillers: usize,
+    ) -> Option<crate::analysis::Signal> {
         t.push(at_s * 1000, words, fillers)
     }
 
@@ -211,7 +228,9 @@ mod tests {
     fn single_spike_does_not_fire_two_sustained_do() {
         let mut t = RhythmTracker::new(Some(base()));
         // establish ≥30 words / ≥20s of calm history
-        for i in 0..6 { assert!(seg(&mut t, i * 5, 12, 0).is_none()); }
+        for i in 0..6 {
+            assert!(seg(&mut t, i * 5, 12, 0).is_none());
+        }
         // one hot sample (lots of fillers) — hysteresis holds
         assert!(seg(&mut t, 30, 12, 6).is_none());
         // second consecutive hot sample — fires
@@ -223,11 +242,15 @@ mod tests {
     #[test]
     fn cooldown_blocks_repeat_signals_within_90s() {
         let mut t = RhythmTracker::new(Some(base()));
-        for i in 0..6 { seg(&mut t, i * 5, 12, 0); }
+        for i in 0..6 {
+            seg(&mut t, i * 5, 12, 0);
+        }
         seg(&mut t, 30, 12, 6);
         assert!(seg(&mut t, 35, 12, 6).is_some());
         // keep it hot — still must stay quiet for 90s
-        for i in 8..24 { assert!(seg(&mut t, i * 5, 12, 6).is_none(), "i={i}"); }
+        for i in 8..24 {
+            assert!(seg(&mut t, i * 5, 12, 6).is_none(), "i={i}");
+        }
         // 40..=120s after fire: quiet; at >125s (i=25 → 125s) allowed again
         assert!(seg(&mut t, 126, 12, 6).is_some());
     }
@@ -235,7 +258,9 @@ mod tests {
     #[test]
     fn thinking_pause_then_resume_does_not_fire() {
         let mut t = RhythmTracker::new(Some(base()));
-        for i in 0..6 { seg(&mut t, i * 5, 12, 0); }
+        for i in 0..6 {
+            seg(&mut t, i * 5, 12, 0);
+        }
         // 40s of silence (no samples), then calm speech resumes
         assert!(seg(&mut t, 70, 12, 0).is_none());
         assert!(seg(&mut t, 75, 12, 0).is_none());
@@ -244,7 +269,9 @@ mod tests {
     #[test]
     fn fast_pace_fires_pace_signal() {
         let mut t = RhythmTracker::new(Some(base()));
-        for i in 0..6 { seg(&mut t, i * 5, 12, 0); }
+        for i in 0..6 {
+            seg(&mut t, i * 5, 12, 0);
+        }
         seg(&mut t, 30, 25, 0); // ~230+ wpm windowed climbing
         let fired = (7..12).find_map(|i| seg(&mut t, i * 5, 25, 0));
         let s = fired.expect("sustained fast pace must fire");

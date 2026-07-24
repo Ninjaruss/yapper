@@ -84,3 +84,15 @@ select, textarea {
 /* Repetition-echo glow: the transcript line being echoed, briefly tinted
    gold (--gold as rgb(217, 169, 46)) then eased back to nothing. */
 .echo-glow { background: rgba(217, 169, 46, 0.25); transition: background 1.5s ease; border-radius: 3px; }
+
+/* "So far" outline: Covered plain, Current bold+gold, IntentUntouched
+   ghosted. shine-underline briefly marks the Current line on insight:shine. */
+#outline p {
+  margin: 4px 0;
+  border-bottom: 2px solid transparent;
+  transition: border-bottom-color 1.2s ease;
+}
+.outline-covered { color: var(--ink); }
+.outline-current { font-weight: bold; color: var(--gold); }
+.outline-intent { opacity: .55; }
+.outline-current.shine-underline { border-bottom-color: var(--gold-bright); }

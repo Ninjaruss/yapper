@@ -73,7 +73,10 @@ impl SessionClock {
         let paused_ms = self.paused_ms(now_ms);
         self.state = ClockState::Ended;
         self.paused_since_ms = None;
-        SessionTotals { ended_at_ms: now_ms, paused_ms }
+        SessionTotals {
+            ended_at_ms: now_ms,
+            paused_ms,
+        }
     }
 }
 

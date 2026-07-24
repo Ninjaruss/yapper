@@ -17,12 +17,12 @@ pub struct Utterance {
 }
 
 pub struct UtteranceChunker {
-    buf: Vec<f32>,          // frames since utterance start (incl. leading silence trim)
-    stream_pos_ms: i64,     // absolute position in the 16k stream
+    buf: Vec<f32>,      // frames since utterance start (incl. leading silence trim)
+    stream_pos_ms: i64, // absolute position in the 16k stream
     utter_start_ms: Option<i64>,
     silence_run_ms: usize,
     speech_ms: usize,
-    pending: Vec<f32>,      // partial frame carry-over
+    pending: Vec<f32>, // partial frame carry-over
 }
 
 impl Default for UtteranceChunker {
@@ -97,8 +97,12 @@ impl UtteranceChunker {
 mod tests {
     use super::*;
 
-    fn loud(ms: usize) -> Vec<f32> { vec![0.3; 16 * ms] }   // 16 samples/ms @16k
-    fn quiet(ms: usize) -> Vec<f32> { vec![0.001; 16 * ms] }
+    fn loud(ms: usize) -> Vec<f32> {
+        vec![0.3; 16 * ms]
+    } // 16 samples/ms @16k
+    fn quiet(ms: usize) -> Vec<f32> {
+        vec![0.001; 16 * ms]
+    }
 
     #[test]
     fn emits_utterance_after_trailing_silence() {

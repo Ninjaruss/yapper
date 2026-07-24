@@ -32,7 +32,9 @@ pub struct MockEngine {
 
 impl MockEngine {
     pub fn new(script: Vec<String>) -> Self {
-        Self { script: script.into() }
+        Self {
+            script: script.into(),
+        }
     }
 }
 
