@@ -40,7 +40,12 @@ export function renderRecap(
     </div>
     <div class="paper-panel" id="recapListenPanel" style="margin-top:16px; display:none;">
       <div class="label">Listen back</div>
-      <audio id="recapAudio" controls preload="metadata" style="width:100%; margin-top:6px;"></audio>
+      <div class="audio-bar">
+        <button id="recapPlay" class="quiet audio-play" aria-label="play">▶</button>
+        <div class="audio-track" id="recapTrack" aria-label="seek"><div class="audio-fill" id="recapFill"></div></div>
+        <span class="label audio-time" id="recapTime">0:00 / 0:00</span>
+      </div>
+      <audio id="recapAudio" preload="metadata" style="display:none;"></audio>
     </div>
     <div class="paper-panel" style="margin-top:16px;">
       <div class="label">The shape of it</div>
@@ -55,11 +60,11 @@ export function renderRecap(
       <div class="label">Moments</div>
       <div id="recapSignals"></div>
     </div>
-    <p id="recapStats" class="label" style="margin-top:10px;"></p>
+    <p id="recapStats" class="label on-desk" style="margin-top:10px;"></p>
     <p id="recapError" class="paused-note" role="alert"></p>
     <div style="display:flex; gap:10px; margin-top:8px;">
-      <button id="recapExport" class="quiet" style="color:var(--ink); border-color:var(--ink-soft); display:none;">Export transcript</button>
-      <button id="recapReveal" class="quiet" style="color:var(--ink); border-color:var(--ink-soft); display:none;">Show file</button>
+      <button id="recapExport" class="quiet" style="display:none;">Export transcript</button>
+      <button id="recapReveal" class="quiet" style="display:none;">Show file</button>
       <button id="recapBack">Back to the desk</button>
     </div>
   `;
@@ -105,6 +110,49 @@ export function renderRecap(
   // recordings dirs in tauri.conf.json). WKWebView plays both WAV and FLAC.
   const audioEl = root.querySelector<HTMLAudioElement>("#recapAudio")!;
   let objectUrl: string | null = null;
+
+  // Parchment player chrome over the hidden <audio> — the native control is
+  // a white system pill that breaks the study. Transcript click-to-seek
+  // drives the same element, so the fill/time stay in sync either way.
+  const playBtn = root.querySelector<HTMLButtonElement>("#recapPlay")!;
+  const trackEl = root.querySelector<HTMLElement>("#recapTrack")!;
+  const fillEl = root.querySelector<HTMLElement>("#recapFill")!;
+  const timeEl = root.querySelector<HTMLElement>("#recapTime")!;
+  const fmtClock = (secs: number): string => {
+    const s = Math.max(0, Math.floor(secs));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  };
+  playBtn.onclick = () => {
+    if (audioEl.paused) {
+      void audioEl.play().catch(() => {
+        /* onerror path below handles unplayable files */
+      });
+    } else {
+      audioEl.pause();
+    }
+  };
+  audioEl.onplay = () => {
+    playBtn.textContent = "❚❚";
+    playBtn.setAttribute("aria-label", "pause");
+  };
+  audioEl.onpause = () => {
+    playBtn.textContent = "▶";
+    playBtn.setAttribute("aria-label", "play");
+  };
+  const refreshClock = () => {
+    const dur = Number.isFinite(audioEl.duration) ? audioEl.duration : 0;
+    fillEl.style.width = dur > 0 ? `${(audioEl.currentTime / dur) * 100}%` : "0%";
+    timeEl.textContent = `${fmtClock(audioEl.currentTime)} / ${fmtClock(dur)}`;
+  };
+  audioEl.ontimeupdate = refreshClock;
+  audioEl.ondurationchange = refreshClock;
+  trackEl.onclick = (e) => {
+    const dur = audioEl.duration;
+    if (!Number.isFinite(dur) || dur <= 0) return;
+    const rect = trackEl.getBoundingClientRect();
+    audioEl.currentTime = ((e.clientX - rect.left) / rect.width) * dur;
+    refreshClock();
+  };
   // WKWebView streams media with byte-range requests, and range responses
   // through the custom asset protocol arrive subtly wrong (valid files fail
   // with MEDIA_ERR_DECODE). Fetching the whole file once and playing from a
@@ -314,8 +362,6 @@ function buildSignalRow(ev: YapperEvent, errorEl: HTMLElement): HTMLElement {
     } else {
       const btn = document.createElement("button");
       btn.className = "quiet";
-      btn.style.color = "var(--ink)";
-      btn.style.borderColor = "var(--ink-soft)";
       btn.style.padding = "4px 10px";
       btn.style.fontSize = "0.8rem";
       btn.textContent = "that was wrong";

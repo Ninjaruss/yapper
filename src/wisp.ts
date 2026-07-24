@@ -45,8 +45,17 @@ const CAPTIONS: Record<WispState, string> = {
 // for the "repeat" state the mockup didn't cover. "tuft-wrap" is likewise
 // new — a calm downward ◠-arc lick, in-style, for "wrapup" (no mockup asset).
 const SVG_MARKUP = `
-<svg viewBox="0 0 300 320" class="wisp-svg" aria-hidden="true" focusable="false">
-  <circle class="wisp-aura" cx="150" cy="185" r="78" fill="#e8912c" opacity=".045"/>
+<svg viewBox="55 10 190 295" class="wisp-svg" aria-hidden="true" focusable="false">
+  <defs>
+    <!-- Soft-edged aura: the mockup's hard-edged circle reads as a flat
+         disc at app scale; a blur turns the same color + pulse into an
+         actual glow. Radius trimmed so the blurred footprint matches the
+         old r78 disc. -->
+    <filter id="wispAuraBlur" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="13"/>
+    </filter>
+  </defs>
+  <circle class="wisp-aura" cx="150" cy="185" r="66" fill="#e8912c" opacity=".045" filter="url(#wispAuraBlur)"/>
   <g class="wisp-body">
     <path d="M114 232 Q102 186 128 148 Q140 132 143 108 Q152 128 172 140 Q200 158 192 204 Q185 244 150 248 Q124 246 114 232 Z"
           fill="#ffe52c" opacity=".5" stroke="#1a1408" stroke-width="2.5" stroke-linejoin="round"/>

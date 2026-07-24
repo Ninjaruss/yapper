@@ -224,20 +224,20 @@ export function renderSetup(
       return;
     }
     pastEl.innerHTML = `
-      <div class="label" style="margin-bottom:8px;">Past talks</div>
+      <div class="label on-desk" style="margin-bottom:8px;">Past talks</div>
       ${sessions
         .map((s) => {
           const dur = s.duration_ms != null ? fmtDuration(s.duration_ms) : "interrupted";
           const intent = s.intent.trim().split("\n")[0].slice(0, 60);
           const fileUi = s.audio_exists
-            ? `<button class="quiet reveal" data-id="${s.id}" style="color:var(--ink); border-color:var(--ink-soft); padding:6px 12px; font-size:0.85rem;">Show file</button>`
+            ? `<button class="quiet reveal" data-id="${s.id}" style="padding:6px 12px; font-size:0.85rem;">Show file</button>`
             : `<span style="font-style:italic; color:var(--ember); font-size:0.85rem;">file missing</span>
-               <button class="quiet forget" data-id="${s.id}" style="color:var(--ink); border-color:var(--ink-soft); padding:6px 12px; font-size:0.85rem;">Forget</button>`;
+               <button class="quiet forget" data-id="${s.id}" style="padding:6px 12px; font-size:0.85rem;">Forget</button>`;
           const exportUi = s.segment_count > 0
-            ? `<button class="quiet export" data-id="${s.id}" style="color:var(--ink); border-color:var(--ink-soft); padding:6px 12px; font-size:0.85rem;">Export transcript</button>`
+            ? `<button class="quiet export" data-id="${s.id}" style="padding:6px 12px; font-size:0.85rem;">Export transcript</button>`
             : "";
           const recapUi = s.duration_ms != null
-            ? `<button class="quiet recap" data-id="${s.id}" style="color:var(--ink); border-color:var(--ink-soft); padding:6px 12px; font-size:0.85rem;">Recap</button>`
+            ? `<button class="quiet recap" data-id="${s.id}" style="padding:6px 12px; font-size:0.85rem;">Recap</button>`
             : "";
           return `
             <div class="paper-panel" style="display:flex; align-items:center; gap:14px; padding:10px 16px; margin-bottom:8px;">
@@ -332,8 +332,8 @@ export function renderSetup(
     const last = coords[coords.length - 1]!;
     return `
       <svg viewBox="0 0 ${W} ${H}" width="100%" height="48" preserveAspectRatio="none" role="img" aria-label="fillers per minute, by talk">
-        <polyline points="${linePoints}" fill="none" style="stroke:var(--gold); stroke-width:2;" stroke-linecap="round" stroke-linejoin="round" />
-        <circle cx="${last.x.toFixed(2)}" cy="${last.y.toFixed(2)}" r="3.5" style="fill:var(--gold);" />
+        <polyline points="${linePoints}" fill="none" style="stroke:var(--gold-ink); stroke-width:2.5;" stroke-linecap="round" stroke-linejoin="round" />
+        <circle cx="${last.x.toFixed(2)}" cy="${last.y.toFixed(2)}" r="3.5" style="fill:var(--gold-ink);" />
       </svg>
     `;
   }

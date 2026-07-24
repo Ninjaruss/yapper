@@ -22,7 +22,7 @@
   font-family: var(--serif);
   font-style: italic;
   font-size: 0.82rem;
-  color: #b8a67e;
+  color: var(--parchment-dim);
   text-align: center;
 }
 
