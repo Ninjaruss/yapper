@@ -144,3 +144,22 @@ select, textarea {
   font-style: italic;
   margin: 6px 0 0;
 }
+
+/* ---- recap transcript: timestamped, click-to-seek ---- */
+.transcript-line {
+  display: flex;
+  gap: 10px;
+  margin: 5px 0;
+  font-size: 0.95rem;
+  border-radius: 3px;
+  padding: 2px 4px;
+}
+.transcript-stamp {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+  flex: 0 0 auto;
+  padding-top: 2px;
+}
+.transcript-line.seekable { cursor: pointer; }
+.transcript-line.seekable:hover { background: rgba(217, 169, 46, 0.14); }
