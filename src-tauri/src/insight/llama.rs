@@ -53,8 +53,34 @@ const MAX_OUTPUT_TOKENS: i32 = 400;
 /// cadence (per the Task 1 spike's gotcha #7 — context creation cost is
 /// small since model weights are already resident). KV cache reuse across
 /// calls is a possible future optimization, not attempted here.
+/// The llama.cpp backend is a PROCESS-GLOBAL singleton: `LlamaBackend::init`
+/// errors with `BackendAlreadyInitialized` on any second call. The engine is
+/// rebuilt per session, so the backend must live in a `OnceLock` shared by
+/// every engine — without this, every session after the first silently lost
+/// insight ("thinking model is off"). Regression-guarded by the ignored
+/// `llama_engine_survives_reconstruction` test.
+static LLAMA_BACKEND: std::sync::OnceLock<LlamaBackend> = std::sync::OnceLock::new();
+static BACKEND_INIT_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn global_backend() -> Result<&'static LlamaBackend, YapperError> {
+    if let Some(b) = LLAMA_BACKEND.get() {
+        return Ok(b);
+    }
+    // Serialize first-time init so concurrent engine constructions can't
+    // both call LlamaBackend::init (the loser would error spuriously).
+    let _guard = BACKEND_INIT_GUARD
+        .lock()
+        .map_err(|_| YapperError::State("llm backend init guard poisoned".into()))?;
+    if let Some(b) = LLAMA_BACKEND.get() {
+        return Ok(b);
+    }
+    let backend = LlamaBackend::init()
+        .map_err(|e| YapperError::Audio(format!("llm init: backend init: {e}")))?;
+    Ok(LLAMA_BACKEND.get_or_init(|| backend))
+}
+
 pub struct LlamaEngine {
-    backend: LlamaBackend,
+    backend: &'static LlamaBackend,
     model: LlamaModel,
     chat_template: LlamaChatTemplate,
 }
@@ -66,8 +92,7 @@ impl LlamaEngine {
     pub fn new(model_dir: &Path) -> Result<Self, YapperError> {
         let path = model_dir.join(LLM_MODEL_FILE);
 
-        let backend = LlamaBackend::init()
-            .map_err(|e| YapperError::Audio(format!("llm init: backend init: {e}")))?;
+        let backend = global_backend()?;
 
         let model_params = LlamaModelParams::default().with_n_gpu_layers(1_000_000);
         let model = LlamaModel::load_from_file(&backend, &path, &model_params)
@@ -96,7 +121,7 @@ impl InsightEngine for LlamaEngine {
             .with_n_threads_batch(8);
         let mut ctx = self
             .model
-            .new_context(&self.backend, ctx_params)
+            .new_context(self.backend, ctx_params)
             .map_err(|e| YapperError::Audio(format!("llm context: {e}")))?;
 
         let messages = [
@@ -193,6 +218,18 @@ impl InsightEngine for LlamaEngine {
 
 #[cfg(test)]
 mod tests {
+    // Regression: the backend is process-global; constructing a SECOND
+    // engine used to fail with BackendAlreadyInitialized (every session
+    // after the first lost insight).
+    #[test]
+    #[ignore = "needs downloaded llm model; run manually"]
+    fn llama_engine_survives_reconstruction() {
+        let dir = model_dir();
+        let first = LlamaEngine::new(&dir).expect("first engine");
+        drop(first);
+        LlamaEngine::new(&dir).expect("second engine must init (global backend)");
+    }
+
     use super::*;
 
     fn model_dir() -> std::path::PathBuf {
