@@ -227,6 +227,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
         recoverBtn.textContent = "Back to the desk";
         recoverBtn.style.marginLeft = "8px";
         recoverBtn.onclick = async () => {
+          if (ended) return;
           recoverBtn.disabled = true;
           try {
             const sessions = await ipc.listSessions();
@@ -322,6 +323,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
   };
 
   root.querySelector<HTMLButtonElement>("#end")!.onclick = async () => {
+    if (ended) return;
     let endedSession: Session;
     try {
       endedSession = await ipc.endSession();
