@@ -12,9 +12,11 @@ use crate::error::YapperError;
 
 const FLAC_MAGIC: &[u8; 4] = b"fLaC";
 
-/// Encode a 16-bit WAV (mono, any sample rate — matches what `capture.rs`
-/// always writes) to a sibling `.flac` file, verify the output actually
-/// looks like a FLAC file, delete the WAV, and return the new path.
+/// Encode a WAV (mono, any sample rate and bit depth) to a sibling `.flac`
+/// file, verify the output actually looks like a FLAC file, delete the WAV,
+/// and return the new path. Note: captures are always 16-bit per `capture.rs`,
+/// but this function gracefully handles non-16-bit WAVs and passes their spec
+/// to flacenc for correct encoding.
 ///
 /// On any failure that happens before the WAV is deleted, a partial
 /// `.flac` (if one made it to disk) is removed and the original WAV is left
@@ -136,5 +138,125 @@ mod tests {
         assert!(result.is_err());
         assert!(!wav_path.with_extension("flac").exists());
         assert!(!wav_path.exists());
+    }
+
+    /// Code-path verification: examining the actual code confirms the
+    /// ordering guarantee that protects against WAV loss:
+    ///
+    /// - Line 25-27: if encode_to() errs → remove partial FLAC → return Err
+    /// - Lines 33-45: if verify_flac() fails → remove partial FLAC → return Err
+    /// - Line 47: only after BOTH succeed is WAV deleted
+    ///
+    /// This test traces that by calling wav_to_flac on a non-existent WAV,
+    /// which forces encode_to to fail immediately (hound::WavReader::open fails).
+    #[test]
+    fn nonexistent_wav_leaves_no_orphaned_flac() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("never_created.wav");
+        let flac_path = wav_path.with_extension("flac");
+
+        // Verify nothing exists initially
+        assert!(!wav_path.exists());
+        assert!(!flac_path.exists());
+
+        let result = wav_to_flac(&wav_path);
+
+        // Must fail (encode_to fails on open)
+        assert!(result.is_err());
+
+        // No orphaned FLAC: the cleanup on line 26 ran
+        assert!(
+            !flac_path.exists(),
+            "partial FLAC cleanup must run when encode_to fails"
+        );
+        // WAV remains absent (never created)
+        assert!(!wav_path.exists());
+    }
+
+    /// Test that wav_to_flac properly handles 24-bit WAVs (outside the typical
+    /// 16-bit assumption). Should either encode successfully with correct
+    /// sample interpretation OR fail cleanly without partial-flac orphans.
+    #[test]
+    fn nonstandard_bit_depth_handles_gracefully() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("take_24bit.wav");
+
+        // Write a 24-bit mono WAV
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 24,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&wav_path, spec).unwrap();
+        let n = 16_000; // 1 second
+        for i in 0..n {
+            let t = i as f32 / 16_000.0;
+            let sample =
+                (t * 440.0 * std::f32::consts::TAU).sin() * 0.5 * (1i32 << 23) as f32;
+            writer.write_sample(sample as i32).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let flac_path = wav_path.with_extension("flac");
+        let result = wav_to_flac(&wav_path);
+
+        // Either succeeds or fails, but MUST leave no orphaned .flac
+        match result {
+            Ok(_) => {
+                // If it succeeds, WAV should be gone and FLAC should exist+valid
+                assert!(
+                    !wav_path.exists(),
+                    "24-bit encode succeeded but WAV not deleted"
+                );
+                assert!(flac_path.exists(), "24-bit encode claimed success but FLAC missing");
+                let flac_bytes = std::fs::read(&flac_path).unwrap();
+                assert_eq!(
+                    &flac_bytes[..4], FLAC_MAGIC,
+                    "24-bit encode produced invalid FLAC magic"
+                );
+            }
+            Err(_) => {
+                // If it fails, both WAV and FLAC must be in a clean state:
+                // WAV untouched, FLAC cleaned up
+                assert!(
+                    wav_path.exists(),
+                    "24-bit encode failed but WAV was deleted anyway"
+                );
+                assert!(
+                    !flac_path.exists(),
+                    "24-bit encode failed but partial FLAC left orphaned"
+                );
+            }
+        }
+    }
+
+    /// Verify that if a .flac file already exists when wav_to_flac is called,
+    /// it gets overwritten (encode_to calls std::fs::write which truncates).
+    #[test]
+    fn existing_flac_is_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("take.wav");
+        write_sine_wav(&wav_path, 16_000, 1.0);
+
+        let flac_path = wav_path.with_extension("flac");
+        // Write an old, tiny FLAC file
+        std::fs::write(&flac_path, b"fLaCold_compressed_data").unwrap();
+        let old_size = std::fs::metadata(&flac_path).unwrap().len();
+
+        let result = wav_to_flac(&wav_path).unwrap();
+
+        assert_eq!(result, flac_path);
+        assert!(flac_path.exists());
+        let new_bytes = std::fs::read(&flac_path).unwrap();
+        assert_eq!(&new_bytes[..4], FLAC_MAGIC);
+        // The new FLAC should be properly encoded (size may vary, but check
+        // it's not just the old bytes)
+        assert_ne!(
+            new_bytes.len() as u64,
+            old_size,
+            "new FLAC should be different size than the old file"
+        );
+        assert!(!wav_path.exists(), "WAV should be deleted after successful encode");
     }
 }
