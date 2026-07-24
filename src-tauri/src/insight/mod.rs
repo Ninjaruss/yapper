@@ -1,5 +1,6 @@
 //! Slow-lane abstraction. One engine per session; called on a relaxed cadence.
 
+pub mod guard;
 pub mod llama;
 pub mod prompt;
 pub mod worker;
