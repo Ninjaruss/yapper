@@ -55,6 +55,9 @@ button {
 button:hover, button:focus-visible { background: var(--gold-bright); }
 button.quiet { background: transparent; color: var(--paper); border: 1px solid var(--ink-soft); }
 button.quiet:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+/* Quiet buttons sitting ON parchment (live header, recap) need ink, not
+   paper, text — same on-desk/on-paper role split as the golds. */
+.paper-panel button.quiet { color: var(--ink); }
 
 select, textarea {
   font-family: var(--serif);
