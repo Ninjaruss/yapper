@@ -495,12 +495,61 @@ async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError>
         }
         return Err(store_err);
     }
+    // Clone the just-written path before `stop_result?` below consumes
+    // `stop_result` (and with it, `final_path`'s borrow) — the spawned
+    // encode thread needs an owned copy regardless of which branch this
+    // takes next.
+    let recorded_path = final_path.clone();
     stop_result?;
 
     // Baseline learning: after the DB end write so duration/paused_ms exist.
     // Never fail end_session over this — log and move on.
     if let Err(e) = update_baseline_after_session(&state.store, s.id) {
         eprintln!("end_session: baseline update failed: {e}");
+    }
+
+    // Compress the WAV to FLAC on a detached, fire-and-forget thread: the DB
+    // end-write above already succeeded and capture.stop() didn't error (we
+    // only get here past the `?` on stop_result), so the take is safely
+    // recorded either way. Encoding a long WAV can take a while, so this
+    // must not block end_session (the UI awaits this command) or hold any
+    // lock — the thread only touches the filesystem and, on success, calls
+    // the store's own self-synchronizing `set_audio_path`.
+    //
+    // Staleness note: the recap screen (and Past Talks) may briefly show the
+    // old .wav path until their next poll. That's fine in practice — trace:
+    // setup.ts's `refreshPast` builds `pastKey` from
+    // `id:duration_ms:audio_exists:segment_count` (not audio_path), so a
+    // WAV→FLAC swap alone won't force a DOM re-render. But the row's "Show
+    // file" / "Export transcript" buttons don't carry a cached path at all —
+    // their onclick handlers call `reveal_session`/`export_transcript` by
+    // session id, and those Tauri commands re-fetch `session.audio_path`
+    // from the DB fresh on every invocation (see lib.rs below). So the very
+    // next click after encoding finishes reveals/exports the FLAC, not a
+    // stale WAV reference — no pastKey change needed for correctness, only
+    // for how soon the row's own display would reflect it (it doesn't
+    // display the path at all).
+    {
+        let store_for_encode = state.store.clone();
+        let session_id = s.id;
+        std::thread::spawn(move || match audio::encode::wav_to_flac(&recorded_path) {
+            Ok(flac_path) => {
+                let flac_str = flac_path.to_string_lossy().into_owned();
+                match store_for_encode.set_audio_path(session_id, &flac_str) {
+                    Ok(()) => eprintln!(
+                        "end_session: compressed session {session_id} audio to {flac_str}"
+                    ),
+                    Err(e) => eprintln!(
+                        "end_session: flac encode ok but set_audio_path failed for session {session_id}: {e}"
+                    ),
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "end_session: flac encode failed for session {session_id} (wav kept): {e}"
+                );
+            }
+        });
     }
 
     state.store.get_session(s.id).map(with_audio_exists)

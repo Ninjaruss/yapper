@@ -44,6 +44,7 @@ pub fn rms_level(samples: &[f32]) -> f32 {
 }
 
 pub mod capture;
+pub mod encode;
 
 #[cfg(test)]
 mod tests {
