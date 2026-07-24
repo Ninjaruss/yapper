@@ -73,6 +73,9 @@ pub struct RhythmTracker {
     effective_filler_ratio: f64,
     /// Effective pace ratio: base PACE_RATIO + pace_bonus from wrong feedback.
     effective_pace_ratio: f64,
+    /// Effective filler absolute margin: base FILLER_ABS_MARGIN + filler_bonus from wrong feedback.
+    /// Low-baseline users live on the margin arm; feedback must widen it too so the nudge lands.
+    effective_filler_margin: f64,
 }
 
 impl RhythmTracker {
@@ -83,8 +86,9 @@ impl RhythmTracker {
     }
 
     /// Construct with feedback-driven ratio bonuses (widened thresholds).
-    /// `filler_bonus` and `pace_bonus` are added to their respective thresholds
+    /// `filler_bonus` and `pace_bonus` are added to both their ratio AND absolute-margin arms
     /// based on wrong-feedback counts (see `ratio_bonus`).
+    /// The bonus lands additively on both arms in fillers/min units — monotone, capped upstream.
     pub fn with_ratio_bonus(
         baseline: Option<Baseline>,
         filler_bonus: f64,
@@ -98,6 +102,7 @@ impl RhythmTracker {
             last_signal_at_ms: None,
             effective_filler_ratio: FILLER_RATIO + filler_bonus,
             effective_pace_ratio: PACE_RATIO + pace_bonus,
+            effective_filler_margin: FILLER_ABS_MARGIN + filler_bonus,
         }
     }
 
@@ -152,7 +157,7 @@ impl RhythmTracker {
         let fillers_per_min = total_fillers as f64 / minutes;
 
         let filler_threshold = (baseline.fillers_per_min * self.effective_filler_ratio)
-            .max(baseline.fillers_per_min + FILLER_ABS_MARGIN);
+            .max(baseline.fillers_per_min + self.effective_filler_margin);
         let pace_threshold = baseline.words_per_min * self.effective_pace_ratio;
 
         let filler_hot = fillers_per_min > filler_threshold;
@@ -368,6 +373,59 @@ mod tests {
         assert!(
             seg(&mut t_widened, 35, 12, 3).is_none(),
             "widened tracker should NOT fire on 6 fpm (below 6.75 threshold)"
+        );
+    }
+
+    #[test]
+    fn with_ratio_bonus_widens_margin_arm_for_low_baseline() {
+        // Regression: low-baseline users live on the absolute-margin arm.
+        // Baseline fillers_per_min = 1.0 (very quiet speaker)
+        //
+        // Default thresholds:
+        // Ratio arm: 1.0 * 1.75 = 1.75
+        // Margin arm: 1.0 + 2.0 = 3.0 (DOMINATES)
+        // threshold = max(1.75, 3.0) = 3.0
+        //
+        // With 0.5 filler_bonus:
+        // Ratio arm: 1.0 * 2.25 = 2.25
+        // Margin arm: 1.0 + 2.5 = 3.5 (STILL DOMINATES, now widened)
+        // threshold = max(2.25, 3.5) = 3.5
+        //
+        // Craft samples so rate at second push is ~3.43 fpm (between 3.0 and 3.5).
+        // Setup: 4 calm samples (0s, 5s, 10s, 15s, 0 fillers each)
+        // First hot sample at 20s with 2 fillers:
+        //   span=20s, rate_span=max(20k,30k)=30k, fillers_per_min=2/(30/60)=4.0 (HOT)
+        // Second sample at 35s with 0 fillers:
+        //   span=35s, total_fillers=2, fillers_per_min=2/(35/60)=3.43 (still hot, between thresholds)
+
+        let low_base = Baseline {
+            fillers_per_min: 1.0,
+            words_per_min: 150.0,
+            sessions_counted: 5,
+        };
+
+        // Default tracker: should fire (first push hot at 4.0 fpm, second at 3.43 fpm > 3.0)
+        let mut t_default = RhythmTracker::new(Some(low_base.clone()));
+        for i in 0..4 {
+            assert!(seg(&mut t_default, i * 5, 12, 0).is_none());
+        }
+        // First hot sample at 20s with 2 fillers (rate = 4.0 fpm > 3.0)
+        assert!(seg(&mut t_default, 20, 12, 2).is_none());
+        // Second sample at 35s with 0 fillers (rate = 3.43 fpm > 3.0, streak=2, fires)
+        assert!(
+            seg(&mut t_default, 35, 12, 0).is_some(),
+            "low-baseline default tracker should fire (second push at 3.43 fpm > 3.0 threshold)"
+        );
+
+        // Widened tracker: same pattern should NOT fire (threshold widened to 3.5)
+        let mut t_widened = RhythmTracker::with_ratio_bonus(Some(low_base), 0.5, 0.0);
+        for i in 0..4 {
+            assert!(seg(&mut t_widened, i * 5, 12, 0).is_none());
+        }
+        assert!(seg(&mut t_widened, 20, 12, 2).is_none()); // 4.0 fpm, still hot
+        assert!(
+            seg(&mut t_widened, 35, 12, 0).is_none(),
+            "low-baseline widened tracker should NOT fire (second push at 3.43 fpm < 3.5 threshold)"
         );
     }
 }
