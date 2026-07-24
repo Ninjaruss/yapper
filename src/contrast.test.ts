@@ -14,6 +14,7 @@ const T = {
   goldBright: "#ffe52c",
   goldInk: "#6b4f0f", // NEW: gold text that sits on parchment
   ember: "#e8912c",
+  emberInk: "#8a4a12", // NEW: ember text that sits on parchment
   transcriptInk: "#5f5138",
 };
 
@@ -26,6 +27,7 @@ const PAIRS: Array<[string, string, string, number]> = [
   ["gold-ink on paper-deep (wondering chip context)", T.goldInk, T.paperDeep, 4.5],
   ["paper text on desk", T.paper, T.desk, 4.5],
   ["ember notes on desk", T.ember, T.desk, 4.5],
+  ["ember-ink notes on paper (stt status, recap errors)", T.emberInk, T.paper, 4.5],
   ["button ink on gold", T.ink, T.gold, 4.5],
   ["transcript ink on paper", T.transcriptInk, T.paper, 4.5],
   ["bright gold accents on desk (large only)", T.goldBright, T.desk, 3.0],

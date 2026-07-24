@@ -275,12 +275,12 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     }
     if (status.insight_active && latestOutline.length === 0 && outlineEl.children.length === 0) {
       const p = document.createElement("p");
-      p.className = "outline-intent";
+      p.className = "outline-note";
       p.textContent = "listening for the shape of it…";
       outlineEl.appendChild(p);
     } else if (!status.insight_active && latestOutline.length === 0 && outlineEl.children.length === 0) {
       const p = document.createElement("p");
-      p.className = "outline-intent";
+      p.className = "outline-note";
       p.textContent = "the thinking model is off — mirror only";
       outlineEl.appendChild(p);
     }

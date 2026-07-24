@@ -228,7 +228,7 @@ export function renderRecap(
       outlineEl.innerHTML = "";
       if (rows.length === 0) {
         const p = document.createElement("p");
-        p.className = "outline-intent";
+        p.className = "outline-note";
         p.textContent = "no outline — the thinking model was off";
         outlineEl.appendChild(p);
         return;
@@ -264,7 +264,7 @@ export function renderRecap(
       signalsEl.innerHTML = "";
       if (events.length === 0) {
         const p = document.createElement("p");
-        p.className = "outline-intent";
+        p.className = "outline-note";
         p.textContent = "a quiet one — no moments flagged";
         signalsEl.appendChild(p);
       } else {

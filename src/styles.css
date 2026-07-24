@@ -9,6 +9,7 @@
   --gold: #d9a92e;
   --gold-bright: #ffe52c;
   --gold-ink: #6b4f0f; /* gold for TEXT ON PARCHMENT — bright golds are desk-only */
+  --ember-ink: #8a4a12; /* ember for TEXT ON PARCHMENT — bright ember is desk-only */
   --ember: #e8912c;
   --meter-bg: rgba(0, 0, 0, 0.4);
   --serif: Georgia, "Iowan Old Style", serif;
@@ -58,6 +59,9 @@ button.quiet:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px
 /* Quiet buttons sitting ON parchment (live header, recap) need ink, not
    paper, text — same on-desk/on-paper role split as the golds. */
 .paper-panel button.quiet { color: var(--ink); }
+/* Same split for ember notes: readable dark ember when they sit on paper
+   (stt status in the transcript panel, recap error lines). */
+.paper-panel .paused-note { color: var(--ember-ink); }
 
 select, textarea {
   font-family: var(--serif);
@@ -110,6 +114,9 @@ select, textarea {
 }
 .outline-intent { opacity: 0.55; font-style: italic; }
 .outline-intent::before { content: "◌ "; }
+/* Muted status lines ("listening for the shape of it…", recap's "no
+   outline") share the ghost look but are NOT outline entries — no glyph. */
+.outline-note { opacity: 0.55; font-style: italic; }
 .outline-current.shine-underline { border-bottom-color: var(--gold-bright); }
 
 /* A new topic fades in with a warm shimmer that decays — the eye is drawn
