@@ -8,7 +8,7 @@ import { ipc, type Session } from "./ipc";
 const root = document.getElementById("app")!;
 
 function showSetup() {
-  renderSetup(root, showLive);
+  renderSetup(root, showLive, showRecapFromHistory);
 }
 
 async function showLive() {
@@ -27,6 +27,12 @@ async function showLive() {
     }
     renderRecap(root, session, showSetup);
   });
+}
+
+// Reached from a "Recap" button on a Past Talks row (setup.ts) — same
+// screen, same onBack, just skipping the live talk that already happened.
+function showRecapFromHistory(session: Session) {
+  renderRecap(root, session, showSetup);
 }
 
 showSetup();
