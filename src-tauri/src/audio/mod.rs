@@ -26,6 +26,14 @@ pub fn list_input_devices() -> Result<Vec<InputDevice>, YapperError> {
         .collect())
 }
 
+/// Convert a signed 16-bit sample to the f32 range used everywhere else in
+/// the capture pipeline. Matches hound's own int/float convention (divide by
+/// 32768, not 32767), so round-tripping through `i16_to_f32` and the writer's
+/// `* i16::MAX as f32` clamp stays close to identity.
+pub fn i16_to_f32(s: i16) -> f32 {
+    s as f32 / 32768.0
+}
+
 /// Root-mean-square of a mono f32 buffer, 0.0..=1.0 for full-scale input.
 pub fn rms_level(samples: &[f32]) -> f32 {
     if samples.is_empty() {
@@ -55,5 +63,14 @@ mod tests {
             .collect();
         let r = rms_level(&sine);
         assert!(r > 0.3 && r < 0.4, "got {r}");
+    }
+
+    #[test]
+    fn i16_to_f32_maps_full_range() {
+        assert_eq!(i16_to_f32(i16::MIN), -1.0);
+        assert!((i16_to_f32(-1) - (-0.0000305)).abs() < 1e-6);
+        assert_eq!(i16_to_f32(0), 0.0);
+        assert_eq!(i16_to_f32(16384), 0.5);
+        assert!((i16_to_f32(i16::MAX) - 0.99997).abs() < 1e-5);
     }
 }

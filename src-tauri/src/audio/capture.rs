@@ -36,6 +36,25 @@ pub fn gate_and_downmix(
     )
 }
 
+/// Shared post-conversion body for every input-stream callback, regardless
+/// of the hardware sample format: gate+downmix, tee to the STT worker (if
+/// any), then hand off to the WAV writer. F32 and I16 callbacks both funnel
+/// through this so the two flows cannot drift apart.
+fn gate_downmix_tee_send(
+    interleaved: &[f32],
+    channels: usize,
+    paused: &Arc<AtomicBool>,
+    tx: &Sender<Vec<f32>>,
+    tee: &Option<Sender<Vec<f32>>>,
+) {
+    if let Some(mono) = gate_and_downmix(interleaved, channels, paused) {
+        if let Some(t) = tee {
+            let _ = t.try_send(mono.clone());
+        }
+        let _ = tx.send(mono);
+    }
+}
+
 /// Writer thread: drains mono buffers into a 16-bit WAV, emitting an RMS
 /// level per drained buffer. Returns when the sending side closes.
 ///
@@ -150,30 +169,35 @@ impl Capture {
         // Owns the cpal Device/Stream for its entire lifetime; both are
         // dropped when this thread returns (after stop_rx signals/disconnects).
         let stream_thread = std::thread::spawn(move || {
-            let setup =
-                (|| -> Result<(cpal::Device, cpal::StreamConfig, u32, usize), YapperError> {
-                    let host = cpal::default_host();
-                    let device = match device_name_owned.as_deref() {
-                        Some(wanted) => host
-                            .input_devices()
-                            .map_err(|e| YapperError::Audio(e.to_string()))?
-                            .find(|d| d.name().map(|n| n == wanted).unwrap_or(false))
-                            .ok_or_else(|| {
-                                YapperError::Audio(format!("input device '{wanted}' not found"))
-                            })?,
-                        None => host
-                            .default_input_device()
-                            .ok_or_else(|| YapperError::Audio("no default input device".into()))?,
-                    };
-                    let config = device
-                        .default_input_config()
-                        .map_err(|e| YapperError::Audio(e.to_string()))?;
-                    let sample_rate = config.sample_rate().0;
-                    let channels = config.channels() as usize;
-                    Ok((device, config.into(), sample_rate, channels))
-                })();
+            let setup = (|| -> Result<
+                (cpal::Device, cpal::StreamConfig, u32, usize, cpal::SampleFormat),
+                YapperError,
+            > {
+                let host = cpal::default_host();
+                let device = match device_name_owned.as_deref() {
+                    Some(wanted) => host
+                        .input_devices()
+                        .map_err(|e| YapperError::Audio(e.to_string()))?
+                        .find(|d| d.name().map(|n| n == wanted).unwrap_or(false))
+                        .ok_or_else(|| {
+                            YapperError::Audio(format!("input device '{wanted}' not found"))
+                        })?,
+                    None => host
+                        .default_input_device()
+                        .ok_or_else(|| YapperError::Audio("no default input device".into()))?,
+                };
+                let config = device
+                    .default_input_config()
+                    .map_err(|e| YapperError::Audio(e.to_string()))?;
+                let sample_rate = config.sample_rate().0;
+                let channels = config.channels() as usize;
+                // Captured before `config.into()` discards it: StreamConfig
+                // (unlike SupportedStreamConfig) has no sample-format field.
+                let sample_format = config.sample_format();
+                Ok((device, config.into(), sample_rate, channels, sample_format))
+            })();
 
-            let (device, stream_config, sample_rate, channels) = match setup {
+            let (device, stream_config, sample_rate, channels, sample_format) = match setup {
                 Ok(v) => v,
                 Err(e) => {
                     let _ = ready_tx.send(Err(e));
@@ -181,22 +205,41 @@ impl Capture {
                 }
             };
 
-            let stream = match device.build_input_stream(
-                &stream_config,
-                move |data: &[f32], _| {
-                    if let Some(mono) = gate_and_downmix(data, channels, &cb_paused) {
-                        if let Some(t) = &cb_tee {
-                            let _ = t.try_send(mono.clone());
-                        }
-                        let _ = cb_tx.send(mono);
+            let stream = match sample_format {
+                cpal::SampleFormat::F32 => match device.build_input_stream(
+                    &stream_config,
+                    move |data: &[f32], _| {
+                        gate_downmix_tee_send(data, channels, &cb_paused, &cb_tx, &cb_tee);
+                    },
+                    |err| eprintln!("audio stream error: {err}"),
+                    None,
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(YapperError::Audio(e.to_string())));
+                        return;
                     }
                 },
-                |err| eprintln!("audio stream error: {err}"),
-                None,
-            ) {
-                Ok(s) => s,
-                Err(e) => {
-                    let _ = ready_tx.send(Err(YapperError::Audio(e.to_string())));
+                cpal::SampleFormat::I16 => match device.build_input_stream(
+                    &stream_config,
+                    move |data: &[i16], _| {
+                        let converted: Vec<f32> =
+                            data.iter().copied().map(super::i16_to_f32).collect();
+                        gate_downmix_tee_send(&converted, channels, &cb_paused, &cb_tx, &cb_tee);
+                    },
+                    |err| eprintln!("audio stream error: {err}"),
+                    None,
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(YapperError::Audio(e.to_string())));
+                        return;
+                    }
+                },
+                other => {
+                    let _ = ready_tx.send(Err(YapperError::Audio(format!(
+                        "unsupported input sample format: {other:?}"
+                    ))));
                     return;
                 }
             };
