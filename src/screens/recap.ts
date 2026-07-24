@@ -111,7 +111,11 @@ export function renderRecap(
     let retried = false;
     const playbackGone = () => {
       root.querySelector<HTMLElement>("#recapListenPanel")!.style.display = "none";
-      errorEl.textContent = "the recording file went missing — transcript still available";
+      const code = audioEl.error?.code;
+      // MediaError codes: 2 network (protocol/scope), 3 decode, 4 not-supported (CSP/scheme)
+      errorEl.textContent = code
+        ? `playback failed (media error ${code}) — transcript still available`
+        : "the recording file went missing — transcript still available";
     };
     audioEl.onerror = () => {
       if (retried) {

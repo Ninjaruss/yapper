@@ -24,7 +24,11 @@
         "enable": true,
         "scope": [
           "$AUDIO/Yapper/**",
-          "$APPDATA/audio/**"
+          "$AUDIO/Yapper/**/*",
+          "$AUDIO/Yapper/*",
+          "$APPDATA/audio/**",
+          "$APPDATA/audio/**/*",
+          "$APPDATA/audio/*"
         ]
       }
     }

@@ -742,6 +742,17 @@ fn reveal_session(state: State<'_, AppState>, id: i64) -> Result<(), YapperError
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Dev-only: surface tauri-internal `log::error!` output (e.g. the asset
+    // protocol's "not configured to allow the path" denials, which are
+    // otherwise silently swallowed without a logger).
+    #[cfg(debug_assertions)]
+    {
+        let _ = env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or("error"),
+        )
+        .try_init();
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
