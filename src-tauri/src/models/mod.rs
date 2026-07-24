@@ -137,8 +137,15 @@ fn ensure_archive_model(
         p
     };
 
-    // Any failure past this point should not leave a partial .part file
-    // lying around for the next run to trip over.
+    // A download or unpack failure no longer deletes the .part file (that
+    // was the pre-resume behavior) — it's left in place so the next attempt
+    // can resume the download (via download_to_file's Range support) instead
+    // of starting over from zero. The .part is only ever removed below, once
+    // we know the outcome: on full success it's no longer needed (already
+    // unpacked into `dir`), and on a post-unpack verification failure it's
+    // discarded too, since an archive that unpacked without error but still
+    // left expected files missing is unlikely to unpack any better on a
+    // second try — better to force a fresh download next time.
     let result = (|| -> Result<(), YapperError> {
         let emit_app = app.clone();
         let model_name = spec.dir_name;
@@ -148,15 +155,15 @@ fn ensure_archive_model(
         unpack_archive(&part_path, dir)?;
         Ok(())
     })();
-
-    let _ = std::fs::remove_file(&part_path);
     result?;
 
     if !files_present(dir, spec.files) {
+        let _ = std::fs::remove_file(&part_path);
         return Err(YapperError::Audio(
             "model download failed: model archive missing expected files".into(),
         ));
     }
+    let _ = std::fs::remove_file(&part_path);
 
     let _ = app.emit("model:ready", spec.dir_name);
     Ok(dir.to_path_buf())
@@ -178,8 +185,12 @@ fn ensure_single_file_model(
     let dest = dir.join(file_name);
     let part_path = dir.join(format!("{file_name}.part"));
 
-    // Same cleanup-on-failure discipline as the archive path: no stray
-    // .part file left for the next run to trip over.
+    // Same resume-friendly discipline as the archive path: a download
+    // failure leaves the .part in place (download_to_file resumes it next
+    // time via Range) instead of deleting it. On success, `rename` already
+    // consumes the .part by moving it to `dest`, so there's nothing left to
+    // clean up here — no unconditional delete needed (or wanted, since that
+    // would wipe a legitimately partial file on failure).
     let result = (|| -> Result<(), YapperError> {
         let emit_app = app.clone();
         let model_name = spec.dir_name;
@@ -193,8 +204,6 @@ fn ensure_single_file_model(
         })?;
         Ok(())
     })();
-
-    let _ = std::fs::remove_file(&part_path);
     result?;
 
     if !files_present(dir, spec.files) {
@@ -207,33 +216,120 @@ fn ensure_single_file_model(
     Ok(dir.to_path_buf())
 }
 
+/// What `download_to_file` should do with an existing `.part` file once it
+/// has a response status in hand for a ranged request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResumeAction {
+    /// Server honored the `Range` request (206 Partial Content) — keep the
+    /// existing bytes and stream the response onto the end of the file.
+    Append,
+    /// Server did not honor the `Range` request, most commonly 200 OK (some
+    /// servers/CDNs ignore `Range` and just send the whole body again) —
+    /// discard whatever bytes exist and start over from zero.
+    Restart,
+}
+
+/// Decide how to continue a partially-downloaded file given the HTTP status
+/// returned for a ranged GET.
+///
+/// Precondition: only meaningful when the caller already knows
+/// `existing_len > 0` and sent a `Range: bytes=<existing_len>-` header for
+/// this request — this function doesn't decide *whether* to resume, only
+/// what to do given a response status once resuming was attempted. A status
+/// outside `{200, 206}` (e.g. 416 Range Not Satisfiable, or any error status)
+/// is not a resumable outcome at all and is the caller's job to reject
+/// before reaching here — this function treats anything that isn't 206 as
+/// "restart", so callers must gate on success statuses first.
+pub(crate) fn resume_decision(existing_len: u64, status: u16) -> ResumeAction {
+    let _ = existing_len; // documents the precondition above; unused otherwise
+    match status {
+        206 => ResumeAction::Append,
+        _ => ResumeAction::Restart,
+    }
+}
+
 /// Stream `url` to `dest`, calling `on_progress(downloaded, total)` roughly
 /// every ≥1 MB (plus once at the end). `total` is 0 if the server didn't
 /// report a Content-Length. Redirects are followed (reqwest's default blocking
 /// client policy). Decoupled from `tauri::AppHandle` so this function (and
 /// thus the real network path) can be exercised directly in a test without a
 /// running Tauri app.
+///
+/// Resume: if `dest` already exists with non-zero length (a `.part` left
+/// over from an interrupted previous attempt), this sends
+/// `Range: bytes=<existing_len>-` instead of a plain GET. A 206 response
+/// appends onto the existing file, with progress starting at `existing_len`.
+/// A 200 (or anything else) means the server didn't honor the range, so the
+/// file is truncated and the download restarts from zero. Any other status
+/// on the ranged request is an error. With no existing `.part` (or a
+/// zero-length one), this is a plain GET — the pre-resume behavior.
 fn download_to_file(
     url: &str,
     dest: &Path,
     mut on_progress: impl FnMut(u64, u64),
 ) -> Result<(), YapperError> {
-    let response = reqwest::blocking::get(url)
-        .map_err(|e| YapperError::Audio(format!("model download failed: request error: {e}")))?;
-    let response = response.error_for_status().map_err(|e| {
-        YapperError::Audio(format!(
-            "model download failed: server returned an error: {e}"
-        ))
-    })?;
-    let total = response.content_length().unwrap_or(0);
+    let existing_len = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
 
-    let mut file = std::fs::File::create(dest).map_err(|e| {
-        YapperError::Audio(format!("model download failed: could not create file: {e}"))
-    })?;
+    let (response, mut file, mut downloaded) = if existing_len > 0 {
+        let client = reqwest::blocking::Client::new();
+        let response = client
+            .get(url)
+            .header(reqwest::header::RANGE, format!("bytes={existing_len}-"))
+            .send()
+            .map_err(|e| {
+                YapperError::Audio(format!("model download failed: request error: {e}"))
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(YapperError::Audio(format!(
+                "model download failed: server returned an error resuming download: {status}"
+            )));
+        }
+        match resume_decision(existing_len, status.as_u16()) {
+            ResumeAction::Append => {
+                let file = std::fs::OpenOptions::new().append(true).open(dest).map_err(|e| {
+                    YapperError::Audio(format!(
+                        "model download failed: could not reopen file to resume: {e}"
+                    ))
+                })?;
+                (response, file, existing_len)
+            }
+            ResumeAction::Restart => {
+                let file = std::fs::File::create(dest).map_err(|e| {
+                    YapperError::Audio(format!(
+                        "model download failed: could not create file: {e}"
+                    ))
+                })?;
+                (response, file, 0)
+            }
+        }
+    } else {
+        let response = reqwest::blocking::get(url).map_err(|e| {
+            YapperError::Audio(format!("model download failed: request error: {e}"))
+        })?;
+        let response = response.error_for_status().map_err(|e| {
+            YapperError::Audio(format!(
+                "model download failed: server returned an error: {e}"
+            ))
+        })?;
+        let file = std::fs::File::create(dest).map_err(|e| {
+            YapperError::Audio(format!("model download failed: could not create file: {e}"))
+        })?;
+        (response, file, 0)
+    };
+
+    // On a fresh download, content_length() is the whole file. On a resumed
+    // (206) response it's just the remaining bytes, so it's added onto
+    // `downloaded` (which starts at existing_len in that case) to get the
+    // true total. `None` (no Content-Length header) stays the existing
+    // "0 means unknown" convention.
+    let total = response
+        .content_length()
+        .map(|remaining| downloaded + remaining)
+        .unwrap_or(0);
 
     let mut reader = response;
     let mut buf = [0u8; 64 * 1024];
-    let mut downloaded: u64 = 0;
     let mut since_last_emit: u64 = 0;
     const EMIT_THRESHOLD: u64 = 1024 * 1024;
 
@@ -360,6 +456,18 @@ mod tests {
         assert_eq!(LLM_MODEL.files, &["model.gguf"]);
         assert_eq!(LLM_MODEL.kind, ArchiveKind::SingleFile);
         assert_ne!(STT_MODEL.dir_name, LLM_MODEL.dir_name);
+    }
+
+    #[test]
+    fn resume_decision_206_appends() {
+        assert_eq!(resume_decision(12_345, 206), ResumeAction::Append);
+    }
+
+    #[test]
+    fn resume_decision_200_restarts() {
+        // Server ignored the Range request and is sending the full body
+        // again — the existing partial bytes are stale, so restart.
+        assert_eq!(resume_decision(12_345, 200), ResumeAction::Restart);
     }
 
     #[test]

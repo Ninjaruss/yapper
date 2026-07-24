@@ -115,6 +115,8 @@ export const ipc = {
     listen<Signal>("analysis:signal", (e) => cb(e.payload)),
   onModelProgress: (cb: (p: ModelProgress) => void): Promise<UnlistenFn> =>
     listen<ModelProgress>("model:progress", (e) => cb(e.payload)),
+  onModelReady: (cb: (model: string) => void): Promise<UnlistenFn> =>
+    listen<string>("model:ready", (e) => cb(e.payload)),
   onOutline: (cb: (entries: OutlineEntryUI[]) => void): Promise<UnlistenFn> =>
     listen<OutlineEntryUI[]>("insight:outline", (e) => cb(e.payload)),
   onQuestion: (cb: (question: string) => void): Promise<UnlistenFn> =>

@@ -38,9 +38,11 @@ pub fn spawn_analysis_worker(
     session_id: i64,
     baseline: Option<Baseline>,
     signal_tx: Sender<Signal>,
+    filler_bonus: f64,
+    pace_bonus: f64,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        let mut rhythm = RhythmTracker::new(baseline);
+        let mut rhythm = RhythmTracker::with_ratio_bonus(baseline, filler_bonus, pace_bonus);
         let mut repetition = RepetitionDetector::new();
         let mut total_words: i64 = 0;
         let mut total_fillers: i64 = 0;
@@ -116,7 +118,7 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded::<(i64, Segment)>();
         let (signal_tx, signal_rx) = crossbeam_channel::unbounded::<Signal>();
 
-        let handle = spawn_analysis_worker(rx, store.clone(), session_id, Some(base()), signal_tx);
+        let handle = spawn_analysis_worker(rx, store.clone(), session_id, Some(base()), signal_tx, 0.0, 0.0);
 
         // Calm dense history: distinct 10-word, filler-free segments spaced
         // 5s apart, establishing >=30 words / >=20s span in the rhythm
@@ -189,7 +191,7 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded::<(i64, Segment)>();
         let (signal_tx, _signal_rx) = crossbeam_channel::unbounded::<Signal>();
 
-        let handle = spawn_analysis_worker(rx, store.clone(), session_id, None, signal_tx);
+        let handle = spawn_analysis_worker(rx, store.clone(), session_id, None, signal_tx, 0.0, 0.0);
 
         let texts = [
             "um so I think this is fine yes",

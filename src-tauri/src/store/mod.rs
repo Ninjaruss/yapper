@@ -382,6 +382,22 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Point a session's `audio_path` at a new file — used by the
+    /// post-session FLAC encode to swap the WAV path for the FLAC path once
+    /// compression succeeds. Does not touch any other column (duration,
+    /// paused_ms, etc. are unaffected by re-encoding the same timeline).
+    pub fn set_audio_path(&self, id: i64, path: &str) -> Result<(), YapperError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| YapperError::State("database lock poisoned".into()))?;
+        conn.execute(
+            "UPDATE sessions SET audio_path = ?2 WHERE id = ?1",
+            params![id, path],
+        )?;
+        Ok(())
+    }
+
     pub fn replace_outline(
         &self,
         session_id: i64,
@@ -440,6 +456,21 @@ impl SessionStore {
             params![event_id, feedback],
         )?;
         Ok(())
+    }
+
+    /// Count events with a given kind where user_feedback = 'wrong' across all sessions.
+    /// Used for feedback-driven threshold tuning: learning from correction signals.
+    pub fn count_wrong_feedback(&self, kind: &str) -> Result<i64, YapperError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| YapperError::State("database lock poisoned".into()))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM events WHERE kind = ?1 AND user_feedback = 'wrong'",
+            params![kind],
+            |row| row.get(0),
+        )?;
+        Ok(count)
     }
 
     pub fn typical_session_ms(&self) -> Result<Option<i64>, YapperError> {
@@ -723,5 +754,91 @@ mod tests {
         let outline2 = store.list_outline(id2).unwrap();
         assert_eq!(outline2.len(), 1);
         assert_eq!(outline2[0].status, "covered");
+    }
+
+    #[test]
+    fn set_audio_path_updates_get_session() {
+        let store = open_test_store();
+        let id = store.create_session(1000, "").unwrap();
+        store.end_session(id, 61_000, "/tmp/a.wav", 0).unwrap();
+        assert_eq!(store.get_session(id).unwrap().audio_path.as_deref(), Some("/tmp/a.wav"));
+
+        store.set_audio_path(id, "/tmp/a.flac").unwrap();
+
+        let s = store.get_session(id).unwrap();
+        assert_eq!(s.audio_path.as_deref(), Some("/tmp/a.flac"));
+        // Other end_session-written fields are untouched by the swap.
+        assert_eq!(s.ended_at_ms, Some(61_000));
+        assert_eq!(s.duration_ms, Some(60_000));
+    }
+
+    #[test]
+    fn count_wrong_feedback_initially_zero() {
+        let store = open_test_store();
+        let count = store.count_wrong_feedback("rhythm_filler").unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn count_wrong_feedback_per_kind_across_sessions() {
+        let store = open_test_store();
+
+        // Session 1: add rhythm_filler and rhythm_pace events
+        let id1 = store.create_session(1000, "").unwrap();
+        let filler_event_1 = store
+            .add_event(id1, 5000, "rhythm_filler", "racing")
+            .unwrap();
+        let pace_event_1 = store.add_event(id1, 6000, "rhythm_pace", "quick").unwrap();
+        let _other_event_1 = store
+            .add_event(id1, 7000, "repetition", "repeating")
+            .unwrap();
+
+        // Session 2: add more events
+        let id2 = store.create_session(10000, "").unwrap();
+        let filler_event_2 = store
+            .add_event(id2, 15000, "rhythm_filler", "racing")
+            .unwrap();
+        let pace_event_2 = store.add_event(id2, 16000, "rhythm_pace", "quick").unwrap();
+
+        // Initially: no wrong feedback on any
+        assert_eq!(store.count_wrong_feedback("rhythm_filler").unwrap(), 0);
+        assert_eq!(store.count_wrong_feedback("rhythm_pace").unwrap(), 0);
+        assert_eq!(store.count_wrong_feedback("repetition").unwrap(), 0);
+
+        // Mark some as wrong: both filler events + one pace event
+        store
+            .set_event_feedback(filler_event_1, "wrong")
+            .unwrap();
+        store
+            .set_event_feedback(filler_event_2, "wrong")
+            .unwrap();
+        store.set_event_feedback(pace_event_1, "wrong").unwrap();
+
+        // Verify counts per kind, including non-existent kinds
+        assert_eq!(
+            store.count_wrong_feedback("rhythm_filler").unwrap(),
+            2,
+            "should count both filler wrongs across sessions"
+        );
+        assert_eq!(
+            store.count_wrong_feedback("rhythm_pace").unwrap(),
+            1,
+            "should count one pace wrong"
+        );
+        assert_eq!(
+            store.count_wrong_feedback("repetition").unwrap(),
+            0,
+            "repetition event was never marked wrong"
+        );
+
+        // Mark the second pace event as wrong
+        store
+            .set_event_feedback(pace_event_2, "wrong")
+            .unwrap();
+        assert_eq!(
+            store.count_wrong_feedback("rhythm_pace").unwrap(),
+            2,
+            "should now count both pace wrongs"
+        );
     }
 }

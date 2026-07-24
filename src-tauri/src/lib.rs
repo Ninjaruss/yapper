@@ -16,6 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, State};
 
 use analysis::Signal;
+use analysis::rhythm::ratio_bonus;
 use audio::capture::Capture;
 use error::YapperError;
 use insight::worker::{InsightDeps, InsightEvent};
@@ -244,12 +245,33 @@ async fn start_session(
             .get_baseline()?
             .filter(|b| b.sessions_counted >= 3);
 
+        // Fetch wrong-feedback counts to widen rhythm thresholds adaptively.
+        // Log-and-default-0 on error to never fail session startup over this.
+        let filler_wrong_count = state
+            .store
+            .count_wrong_feedback("rhythm_filler")
+            .unwrap_or_else(|e| {
+                eprintln!("start_session: count_wrong_feedback(rhythm_filler) failed: {e}");
+                0
+            });
+        let pace_wrong_count = state
+            .store
+            .count_wrong_feedback("rhythm_pace")
+            .unwrap_or_else(|e| {
+                eprintln!("start_session: count_wrong_feedback(rhythm_pace) failed: {e}");
+                0
+            });
+        let filler_bonus = ratio_bonus(filler_wrong_count);
+        let pace_bonus = ratio_bonus(pace_wrong_count);
+
         analysis_worker = Some(analysis::worker::spawn_analysis_worker(
             analysis_rx,
             state.store.clone(),
             id,
             baseline,
             signal_tx,
+            filler_bonus,
+            pace_bonus,
         ));
 
         // Forward signals to the UI, same pattern as levels/segments; exits
@@ -459,18 +481,75 @@ async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError>
         let _ = handle.join();
     }
     let final_path = stop_result.as_ref().unwrap_or(&wav_path);
-    state.store.end_session(
+    // If both capture.stop() and store.end_session fail, log the stop error
+    // before surfacing the store error (since the ? on stop_result below
+    // would otherwise drop the stop error, making debugging harder).
+    if let Err(store_err) = state.store.end_session(
         s.id,
         totals.ended_at_ms,
         final_path.to_string_lossy().as_ref(),
         totals.paused_ms,
-    )?;
+    ) {
+        if let Err(stop_err) = &stop_result {
+            eprintln!("end_session: capture stop also failed: {stop_err}");
+        }
+        return Err(store_err);
+    }
+    // Clone the just-written path before `stop_result?` below consumes
+    // `stop_result` (and with it, `final_path`'s borrow) — the spawned
+    // encode thread needs an owned copy regardless of which branch this
+    // takes next.
+    let recorded_path = final_path.clone();
     stop_result?;
 
     // Baseline learning: after the DB end write so duration/paused_ms exist.
     // Never fail end_session over this — log and move on.
     if let Err(e) = update_baseline_after_session(&state.store, s.id) {
         eprintln!("end_session: baseline update failed: {e}");
+    }
+
+    // Compress the WAV to FLAC on a detached, fire-and-forget thread: the DB
+    // end-write above already succeeded and capture.stop() didn't error (we
+    // only get here past the `?` on stop_result), so the take is safely
+    // recorded either way. Encoding a long WAV can take a while, so this
+    // must not block end_session (the UI awaits this command) or hold any
+    // lock — the thread only touches the filesystem and, on success, calls
+    // the store's own self-synchronizing `set_audio_path`.
+    //
+    // Staleness note: the recap screen (and Past Talks) may briefly show the
+    // old .wav path until their next poll. That's fine in practice — trace:
+    // setup.ts's `refreshPast` builds `pastKey` from
+    // `id:duration_ms:audio_exists:segment_count` (not audio_path), so a
+    // WAV→FLAC swap alone won't force a DOM re-render. But the row's "Show
+    // file" / "Export transcript" buttons don't carry a cached path at all —
+    // their onclick handlers call `reveal_session`/`export_transcript` by
+    // session id, and those Tauri commands re-fetch `session.audio_path`
+    // from the DB fresh on every invocation (see lib.rs below). So the very
+    // next click after encoding finishes reveals/exports the FLAC, not a
+    // stale WAV reference — no pastKey change needed for correctness, only
+    // for how soon the row's own display would reflect it (it doesn't
+    // display the path at all).
+    {
+        let store_for_encode = state.store.clone();
+        let session_id = s.id;
+        std::thread::spawn(move || match audio::encode::wav_to_flac(&recorded_path) {
+            Ok(flac_path) => {
+                let flac_str = flac_path.to_string_lossy().into_owned();
+                match store_for_encode.set_audio_path(session_id, &flac_str) {
+                    Ok(()) => eprintln!(
+                        "end_session: compressed session {session_id} audio to {flac_str}"
+                    ),
+                    Err(e) => eprintln!(
+                        "end_session: flac encode ok but set_audio_path failed for session {session_id}: {e}"
+                    ),
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "end_session: flac encode failed for session {session_id} (wav kept): {e}"
+                );
+            }
+        });
     }
 
     state.store.get_session(s.id).map(with_audio_exists)

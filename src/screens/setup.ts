@@ -14,16 +14,20 @@ let modelDownloadStarted = false;
 // listener a previous renderSetup() call registered, even though that call's
 // own local variable is no longer reachable.
 let modelProgressUnlisten: (() => void) | null = null;
+let modelReadyUnlisten: (() => void) | null = null;
 
 export function renderSetup(
   root: HTMLElement,
   onStarted: () => void,
+  onRecap: (session: Session) => void,
 ): void {
   // Defensive: drop any listener left over from a previous renderSetup()
   // call before registering a new one below, so listeners never accumulate
   // across re-renders.
   modelProgressUnlisten?.();
   modelProgressUnlisten = null;
+  modelReadyUnlisten?.();
+  modelReadyUnlisten = null;
 
   root.innerHTML = `
     <h1>Yapper</h1>
@@ -40,22 +44,26 @@ export function renderSetup(
     </div>
     <div id="modelBanner"></div>
     <div id="past" style="margin-top:22px;"></div>
+    <div id="trend"></div>
   `;
 
   const mic = root.querySelector<HTMLSelectElement>("#mic")!;
   const errorEl = root.querySelector<HTMLParagraphElement>("#error")!;
   const pastEl = root.querySelector<HTMLElement>("#past")!;
+  const trendEl = root.querySelector<HTMLElement>("#trend")!;
   const bannerEl = root.querySelector<HTMLElement>("#modelBanner")!;
 
   // Same ended-flag pattern as live.ts's onLevel: if cleanup() runs before
   // the listen() promise resolves, unlisten immediately on arrival instead
-  // of leaking the subscription. (modelProgressUnlisten itself is the
-  // module-scope variable above.)
+  // of leaking the subscription. (modelProgressUnlisten/modelReadyUnlisten
+  // themselves are the module-scope variables above.)
   let modelBannerDone = false;
-  const stopModelProgressListener = () => {
+  const stopModelListeners = () => {
     modelBannerDone = true;
     modelProgressUnlisten?.();
     modelProgressUnlisten = null;
+    modelReadyUnlisten?.();
+    modelReadyUnlisten = null;
   };
 
   // Yapper downloads two models, one at a time (STT first, then the LLM) —
@@ -92,6 +100,25 @@ export function renderSetup(
     const textEl = bannerEl.querySelector<HTMLElement>("#modelText")!;
     const barEl = bannerEl.querySelector<HTMLElement>("#modelBar")!;
 
+    // Guards the "models ready" fade so it only ever runs once, whichever
+    // path notices completion first — the model:ready handler below (fires
+    // the instant the last needed model finishes) and ensureModels()'s own
+    // .then() (fires once both downloads have fully returned) land within
+    // moments of each other.
+    let bannerFaded = false;
+    function showModelsReady(): void {
+      if (bannerFaded) return;
+      bannerFaded = true;
+      stopModelListeners();
+      textEl.textContent = "models ready";
+      barEl.style.animation = "none";
+      barEl.style.opacity = "1";
+      barEl.style.width = "100%";
+      setTimeout(() => {
+        bannerEl.innerHTML = "";
+      }, 3000);
+    }
+
     ipc.onModelProgress((p) => {
       textEl.textContent = textForModel(p.model);
       if (p.total === 0) {
@@ -113,21 +140,42 @@ export function renderSetup(
       }
     });
 
+    // model:ready fires per-model, the moment that model's files are
+    // verified on disk — well before ensureModels() as a whole resolves, and
+    // (for whichever model downloads second) before that model's own first
+    // model:progress event, which can lag by up to ~1 MB of download. This
+    // flips the banner text immediately on the STT→LLM handoff instead of
+    // leaving stale "listening model" text up while the LLM download is
+    // already underway, and fades the banner immediately once the last
+    // needed model lands rather than waiting on ensureModels() to resolve.
+    ipc.onModelReady((model) => {
+      if (model === "llm") {
+        showModelsReady();
+      } else if (!ready.llm) {
+        // The model that just finished wasn't the LLM, so per the
+        // sequential STT-then-LLM order in ensure_models, the LLM is next —
+        // but only if it actually needs downloading (it may have already
+        // been present at banner-open time, in which case ensureModels()
+        // resolves right behind this event and showModelsReady() below
+        // handles it).
+        textEl.textContent = textForModel("llm");
+      }
+    }).then((fn) => {
+      if (modelBannerDone) {
+        fn();
+      } else {
+        modelReadyUnlisten = fn;
+      }
+    });
+
     if (!modelDownloadStarted) {
       modelDownloadStarted = true;
       ipc.ensureModels()
         .then(() => {
-          stopModelProgressListener();
-          textEl.textContent = "models ready";
-          barEl.style.animation = "none";
-          barEl.style.opacity = "1";
-          barEl.style.width = "100%";
-          setTimeout(() => {
-            bannerEl.innerHTML = "";
-          }, 3000);
+          showModelsReady();
         })
         .catch((e) => {
-          stopModelProgressListener();
+          stopModelListeners();
           // Allow a later visit to this screen to retry the download —
           // without this, a failed download could never be retried short
           // of an app restart.
@@ -159,6 +207,13 @@ export function renderSetup(
   let pastKey = "";
   async function refreshPast(): Promise<void> {
     const sessions: Session[] = await ipc.listSessions();
+
+    // The trend panel reuses this same fetch (no extra ipc round-trip) and
+    // has its own change-key, since filler_count/word_count land via a
+    // separate DB write shortly after duration_ms (see lib.rs's end_session
+    // then update_counts) and aren't part of pastKey below.
+    refreshTrend(sessions);
+
     const key = sessions
       .map((s) => `${s.id}:${s.duration_ms}:${s.audio_exists}:${s.segment_count}`)
       .join("|");
@@ -181,11 +236,15 @@ export function renderSetup(
           const exportUi = s.segment_count > 0
             ? `<button class="quiet export" data-id="${s.id}" style="color:var(--ink); border-color:var(--ink-soft); padding:6px 12px; font-size:0.85rem;">Export transcript</button>`
             : "";
+          const recapUi = s.duration_ms != null
+            ? `<button class="quiet recap" data-id="${s.id}" style="color:var(--ink); border-color:var(--ink-soft); padding:6px 12px; font-size:0.85rem;">Recap</button>`
+            : "";
           return `
             <div class="paper-panel" style="display:flex; align-items:center; gap:14px; padding:10px 16px; margin-bottom:8px;">
               <span style="font-family:var(--mono); color:var(--ink-soft); min-width:110px;">${fmtDate(s.started_at_ms)}</span>
               <span style="font-family:var(--mono); min-width:56px;">${dur}</span>
               <span style="flex:1; font-style:italic; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(intent)}</span>
+              ${recapUi}
               ${exportUi}
               ${fileUi}
             </div>`;
@@ -211,6 +270,91 @@ export function renderSetup(
           errorEl.textContent = String(e);
         });
     });
+    pastEl.querySelectorAll<HTMLButtonElement>("button.recap").forEach((btn) => {
+      btn.onclick = () => {
+        const session = sessions.find((s) => s.id === Number(btn.dataset.id));
+        if (!session) return;
+        // Same cleanup this screen runs before onStarted — the recap screen
+        // fully replaces this one, so its timers/listeners must stop too.
+        cleanup();
+        onRecap(session);
+      };
+    });
+  }
+
+  // "Over time": fillers-per-speaking-minute per completed talk, oldest to
+  // newest. Only sessions with real counts and at least two minutes of
+  // speaking are informative enough to plot; fewer than three such points
+  // and the whole panel stays hidden rather than showing a lonely dot.
+  const MIN_TREND_POINTS = 3;
+  const MIN_DURATION_FOR_TREND_MS = 120_000;
+
+  function trendSeries(sessions: Session[]): { id: number; fpm: number }[] {
+    return sessions
+      .filter(
+        (s) =>
+          s.duration_ms != null &&
+          s.duration_ms >= MIN_DURATION_FOR_TREND_MS &&
+          s.filler_count != null &&
+          s.word_count != null &&
+          s.word_count > 0,
+      )
+      .slice()
+      .reverse() // listSessions() is newest-first; the trend reads oldest→newest
+      .map((s) => {
+        const speakingMs = s.duration_ms! - s.paused_ms;
+        const minutes = speakingMs / 60_000;
+        const fpm = minutes > 0 ? s.filler_count! / minutes : 0;
+        return { id: s.id, fpm };
+      })
+      .filter((p) => Number.isFinite(p.fpm));
+  }
+
+  // Builds the sparkline as an SVG string. Every interpolated value here is
+  // a number computed above (ids and fpm ratios) — never session text — so
+  // string interpolation is safe without escapeHtml; textContent/escapeHtml
+  // discipline still applies everywhere else dynamic strings are involved.
+  function renderSparkline(points: { id: number; fpm: number }[]): string {
+    const W = 300;
+    const H = 48;
+    const PAD = 4;
+    const values = points.map((p) => p.fpm);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min;
+    const xStep = points.length > 1 ? (W - 2 * PAD) / (points.length - 1) : 0;
+    const coords = points.map((p, i) => {
+      const x = PAD + i * xStep;
+      const y = range > 0 ? PAD + (1 - (p.fpm - min) / range) * (H - 2 * PAD) : H / 2;
+      return { x, y };
+    });
+    const linePoints = coords.map((c) => `${c.x.toFixed(2)},${c.y.toFixed(2)}`).join(" ");
+    const last = coords[coords.length - 1]!;
+    return `
+      <svg viewBox="0 0 ${W} ${H}" width="100%" height="48" preserveAspectRatio="none" role="img" aria-label="fillers per minute, by talk">
+        <polyline points="${linePoints}" fill="none" style="stroke:var(--gold); stroke-width:2;" stroke-linecap="round" stroke-linejoin="round" />
+        <circle cx="${last.x.toFixed(2)}" cy="${last.y.toFixed(2)}" r="3.5" style="fill:var(--gold);" />
+      </svg>
+    `;
+  }
+
+  let trendKey = "";
+  function refreshTrend(sessions: Session[]): void {
+    const points = trendSeries(sessions);
+    const key = points.map((p) => `${p.id}:${p.fpm}`).join("|");
+    if (key === trendKey) return;
+    trendKey = key;
+    if (points.length < MIN_TREND_POINTS) {
+      trendEl.innerHTML = "";
+      return;
+    }
+    trendEl.innerHTML = `
+      <div class="paper-panel" style="margin-top:22px; padding:14px 16px;">
+        <div class="label" style="margin-bottom:8px;">Over time</div>
+        ${renderSparkline(points)}
+        <p class="label" style="margin-top:6px; margin-bottom:0;">fillers per minute, by talk</p>
+      </div>
+    `;
   }
 
   const refreshAll = () => {
@@ -223,7 +367,7 @@ export function renderSetup(
   const cleanup = () => {
     clearInterval(timer);
     window.removeEventListener("focus", refreshAll);
-    stopModelProgressListener();
+    stopModelListeners();
   };
 
   root.querySelector<HTMLButtonElement>("#start")!.onclick = async () => {
