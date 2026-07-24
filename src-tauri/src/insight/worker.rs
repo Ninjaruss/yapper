@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
+use crate::insight::guard;
 use crate::insight::prompt::{build_prompt, parse_update};
 use crate::insight::{InsightEngine, OutlineEntry, OutlineStatus};
 use crate::store::SessionStore;
@@ -226,6 +227,8 @@ fn run_insight_pass(
         state,
         event_tx,
         update.question.as_deref(),
+        update.sparked_by.as_deref(),
+        &recent,
     );
     apply_wrapup(
         store,
@@ -259,10 +262,16 @@ fn apply_outline(
     event_tx: &Sender<InsightEvent>,
     outline: &[OutlineEntry],
 ) {
-    if outline.is_empty() || outline == state.current_outline {
+    if outline.is_empty() {
         return;
     }
-    state.current_outline = outline.to_vec();
+    // Damp renames BEFORE the no-change comparison: a pure reword must
+    // resolve to the existing outline and become a no-op.
+    let damped = guard::damp_labels(&state.current_outline, outline);
+    if damped == state.current_outline {
+        return;
+    }
+    state.current_outline = damped;
     let entries: Vec<(&str, &str)> = state
         .current_outline
         .iter()
@@ -274,11 +283,12 @@ fn apply_outline(
     let _ = event_tx.send(InsightEvent::Outline(state.current_outline.clone()));
 }
 
-/// A question is only shown if it clears the spacing gate: 60s minimum
-/// elapsed before the very first question, then 120s minimum since the
-/// last one shown — both measured on the speech clock. Questions that
-/// don't clear the gate are simply dropped this pass (not queued — the
-/// next pass tries again with fresh model output).
+/// A question is only shown if it clears BOTH gates: the grounding gate
+/// (sparked_by must quote the recent transcript — hallucinated citations
+/// die here) and the spacing gate (60s first-question floor, then 120s
+/// between questions, on the speech clock). Failing either simply drops
+/// the question this pass.
+#[allow(clippy::too_many_arguments)]
 fn apply_question(
     store: &Arc<SessionStore>,
     session_id: i64,
@@ -286,10 +296,18 @@ fn apply_question(
     state: &mut PassState,
     event_tx: &Sender<InsightEvent>,
     question: Option<&str>,
+    sparked_by: Option<&str>,
+    recent: &[(i64, String)],
 ) {
     let Some(q) = question else {
         return;
     };
+    let Some(spark) = sparked_by else {
+        return; // no citation, no question
+    };
+    if !guard::is_grounded(spark, recent) {
+        return; // citation not found in the recent window
+    }
     let allowed = match state.last_question_elapsed_ms {
         Some(last_elapsed) => elapsed_ms - last_elapsed >= QUESTION_SPACING_MS,
         None => elapsed_ms >= FIRST_QUESTION_MIN_ELAPSED_MS,
@@ -461,8 +479,8 @@ mod tests {
         let insight_failed = Arc::new(AtomicBool::new(false));
 
         let script = vec![
-            r#"{"outline":[],"question":"What did the quiet feel like?","wrapup_ready":false,"shine":false}"#.to_string(),
-            r#"{"outline":[],"question":"What surprised you most about that?","wrapup_ready":false,"shine":false}"#.to_string(),
+            r#"{"outline":[],"question":"What did the quiet feel like?","sparked_by":"one","wrapup_ready":false,"shine":false}"#.to_string(),
+            r#"{"outline":[],"question":"What surprised you most about that?","sparked_by":"two","wrapup_ready":false,"shine":false}"#.to_string(),
         ];
         let engine = Box::new(MockInsight::new(script));
 
@@ -634,5 +652,99 @@ mod tests {
             .count();
         assert_eq!(wrapup_db_events, 1);
         assert!(!insight_failed.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn ungrounded_question_is_dropped() {
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
+        let sid = store.create_session(0, "").unwrap();
+        let (tx, rx) = crossbeam_channel::unbounded::<(i64, Segment)>();
+        let (event_tx, event_rx) = crossbeam_channel::unbounded::<InsightEvent>();
+        let insight_failed = Arc::new(AtomicBool::new(false));
+
+        // sparked_by does not appear in the transcript -> must be dropped.
+        let script = vec![
+            r#"{"outline":[],"question":"What was the hardest part?","sparked_by":"my biggest takeaway","wrapup_ready":false,"shine":false}"#.to_string(),
+        ];
+        let engine = Box::new(MockInsight::new(script));
+        let handle = spawn_insight_worker(
+            engine, rx, deps(store.clone(), sid, ""), event_tx, insight_failed.clone(), 50,
+        );
+
+        tx.send((1, seg(65_000, "talking about the empty apartment"))).unwrap();
+        drop(tx);
+        join_with_watchdog(handle);
+
+        let question_events = event_rx
+            .try_iter()
+            .filter(|e| matches!(e, InsightEvent::Question(_)))
+            .count();
+        assert_eq!(question_events, 0, "ungrounded question must not surface");
+        assert!(store.list_events(sid).unwrap().iter().all(|e| e.kind != "question"));
+    }
+
+    #[test]
+    fn grounded_question_passes_the_gate() {
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
+        let sid = store.create_session(0, "").unwrap();
+        let (tx, rx) = crossbeam_channel::unbounded::<(i64, Segment)>();
+        let (event_tx, event_rx) = crossbeam_channel::unbounded::<InsightEvent>();
+        let insight_failed = Arc::new(AtomicBool::new(false));
+
+        let script = vec![
+            r#"{"outline":[],"question":"What did the empty apartment feel like?","sparked_by":"the empty apartment","wrapup_ready":false,"shine":false}"#.to_string(),
+        ];
+        let engine = Box::new(MockInsight::new(script));
+        let handle = spawn_insight_worker(
+            engine, rx, deps(store.clone(), sid, ""), event_tx, insight_failed.clone(), 50,
+        );
+
+        tx.send((1, seg(65_000, "talking about the empty apartment"))).unwrap();
+        drop(tx);
+        join_with_watchdog(handle);
+
+        let question_events = event_rx
+            .try_iter()
+            .filter(|e| matches!(e, InsightEvent::Question(_)))
+            .count();
+        assert_eq!(question_events, 1);
+    }
+
+    #[test]
+    fn renamed_outline_label_is_damped() {
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
+        let sid = store.create_session(0, "").unwrap();
+        let (tx, rx) = crossbeam_channel::unbounded::<(i64, Segment)>();
+        let (event_tx, event_rx) = crossbeam_channel::unbounded::<InsightEvent>();
+        let insight_failed = Arc::new(AtomicBool::new(false));
+
+        let script = vec![
+            r#"{"outline":[{"label":"Moving to Austin","status":"current"}],"question":null,"wrapup_ready":false,"shine":false}"#.to_string(),
+            r#"{"outline":[{"label":"The Austin move","status":"covered"}],"question":null,"wrapup_ready":false,"shine":false}"#.to_string(),
+        ];
+        let engine = Box::new(MockInsight::new(script));
+        let handle = spawn_insight_worker(
+            engine, rx, deps(store.clone(), sid, ""), event_tx, insight_failed.clone(), 50,
+        );
+
+        tx.send((1, seg(65_000, "one"))).unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        tx.send((2, seg(130_000, "two"))).unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        drop(tx);
+        join_with_watchdog(handle);
+
+        let outline = store.list_outline(sid).unwrap();
+        assert_eq!(outline.len(), 1);
+        assert_eq!(outline[0].label, "Moving to Austin", "label text must survive the rename");
+        assert_eq!(outline[0].status, "covered", "status change must still apply");
+
+        // Both passes changed something (status), so two Outline events is
+        // fine — what matters is the label never changed.
+        for e in event_rx.try_iter() {
+            if let InsightEvent::Outline(entries) = e {
+                assert_eq!(entries[0].label, "Moving to Austin");
+            }
+        }
     }
 }
