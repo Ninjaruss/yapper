@@ -16,6 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, State};
 
 use analysis::Signal;
+use analysis::rhythm::ratio_bonus;
 use audio::capture::Capture;
 use error::YapperError;
 use insight::worker::{InsightDeps, InsightEvent};
@@ -244,12 +245,33 @@ async fn start_session(
             .get_baseline()?
             .filter(|b| b.sessions_counted >= 3);
 
+        // Fetch wrong-feedback counts to widen rhythm thresholds adaptively.
+        // Log-and-default-0 on error to never fail session startup over this.
+        let filler_wrong_count = state
+            .store
+            .count_wrong_feedback("rhythm_filler")
+            .unwrap_or_else(|e| {
+                eprintln!("start_session: count_wrong_feedback(rhythm_filler) failed: {e}");
+                0
+            });
+        let pace_wrong_count = state
+            .store
+            .count_wrong_feedback("rhythm_pace")
+            .unwrap_or_else(|e| {
+                eprintln!("start_session: count_wrong_feedback(rhythm_pace) failed: {e}");
+                0
+            });
+        let filler_bonus = ratio_bonus(filler_wrong_count);
+        let pace_bonus = ratio_bonus(pace_wrong_count);
+
         analysis_worker = Some(analysis::worker::spawn_analysis_worker(
             analysis_rx,
             state.store.clone(),
             id,
             baseline,
             signal_tx,
+            filler_bonus,
+            pace_bonus,
         ));
 
         // Forward signals to the UI, same pattern as levels/segments; exits

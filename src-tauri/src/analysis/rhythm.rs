@@ -69,18 +69,35 @@ pub struct RhythmTracker {
     filler_streak: u32,
     pace_streak: u32,
     last_signal_at_ms: Option<i64>,
+    /// Effective filler ratio: base FILLER_RATIO + filler_bonus from wrong feedback.
+    effective_filler_ratio: f64,
+    /// Effective pace ratio: base PACE_RATIO + pace_bonus from wrong feedback.
+    effective_pace_ratio: f64,
 }
 
 impl RhythmTracker {
     /// `None` baseline means the tracker is permanently silent — there is no
     /// "hot" without something to be hot relative to.
     pub fn new(baseline: Option<Baseline>) -> Self {
+        Self::with_ratio_bonus(baseline, 0.0, 0.0)
+    }
+
+    /// Construct with feedback-driven ratio bonuses (widened thresholds).
+    /// `filler_bonus` and `pace_bonus` are added to their respective thresholds
+    /// based on wrong-feedback counts (see `ratio_bonus`).
+    pub fn with_ratio_bonus(
+        baseline: Option<Baseline>,
+        filler_bonus: f64,
+        pace_bonus: f64,
+    ) -> Self {
         Self {
             baseline,
             window: VecDeque::new(),
             filler_streak: 0,
             pace_streak: 0,
             last_signal_at_ms: None,
+            effective_filler_ratio: FILLER_RATIO + filler_bonus,
+            effective_pace_ratio: PACE_RATIO + pace_bonus,
         }
     }
 
@@ -134,9 +151,9 @@ impl RhythmTracker {
         let words_per_min = total_words as f64 / minutes;
         let fillers_per_min = total_fillers as f64 / minutes;
 
-        let filler_threshold = (baseline.fillers_per_min * FILLER_RATIO)
+        let filler_threshold = (baseline.fillers_per_min * self.effective_filler_ratio)
             .max(baseline.fillers_per_min + FILLER_ABS_MARGIN);
-        let pace_threshold = baseline.words_per_min * PACE_RATIO;
+        let pace_threshold = baseline.words_per_min * self.effective_pace_ratio;
 
         let filler_hot = fillers_per_min > filler_threshold;
         let pace_hot = words_per_min > pace_threshold;
@@ -186,6 +203,13 @@ impl RhythmTracker {
     }
 }
 
+/// Compute a bonus to add to filler/pace ratios based on count of "wrong" feedback.
+/// Each wrong feedback widens the threshold by 0.05 to allow correcting thresholds.
+/// Bonus caps at 0.5 to prevent runaway lenience.
+pub fn ratio_bonus(wrong_count: i64) -> f64 {
+    (wrong_count as f64 * 0.05).clamp(0.0, 0.5)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +221,20 @@ mod tests {
             words_per_min: 150.0,
             sessions_counted: 5,
         }
+    }
+
+    #[test]
+    fn ratio_bonus_computes_correctly() {
+        // 0 wrong → 0.0 bonus
+        assert!((ratio_bonus(0) - 0.0).abs() < 1e-9);
+        // 3 wrong → 0.15 bonus
+        assert!((ratio_bonus(3) - 0.15).abs() < 1e-9);
+        // 10 wrong → 0.5 bonus (capped)
+        assert!((ratio_bonus(10) - 0.5).abs() < 1e-9);
+        // 20 wrong → 0.5 bonus (capped at 1.0 * 0.05)
+        assert!((ratio_bonus(20) - 0.5).abs() < 1e-9);
+        // -1 wrong → 0.0 bonus (negative clamped to 0)
+        assert!((ratio_bonus(-1) - 0.0).abs() < 1e-9);
     }
 
     fn seg(
@@ -293,5 +331,43 @@ mod tests {
                 "must never fire on mild, sparse filler clustering (i={i})"
             );
         }
+    }
+
+    #[test]
+    fn with_ratio_bonus_widens_thresholds() {
+        // Default FILLER_RATIO = 1.75, base fillers_per_min = 3.0
+        // Default threshold = 3.0 * 1.75 = 5.25 (or 3.0 + 2.0 = 5.0, max is 5.25)
+        //
+        // With 0.5 filler_bonus:
+        // Effective ratio = 1.75 + 0.5 = 2.25
+        // Widened threshold = 3.0 * 2.25 = 6.75
+        //
+        // Craft filler rate between 5.25 and 6.75 to fire under new() but NOT
+        // under with_ratio_bonus. A rate of ~6.0 fillers/min should do it.
+        //
+        // To get 6.0 fillers/min in a 60s window:
+        // 60s window with rate_floor = 30s, so minutes = 30/60 = 0.5
+        // Need fillers = 6.0 * 0.5 = 3 fillers in the window
+
+        // First, establish baseline with calm history (new() should fire here)
+        let mut t_default = RhythmTracker::new(Some(base()));
+        for i in 0..6 {
+            assert!(seg(&mut t_default, i * 5, 12, 0).is_none());
+        }
+        // Push two consecutive moderate-filler segments (3 fillers each = 6.0 fpm)
+        assert!(seg(&mut t_default, 30, 12, 3).is_none()); // first hot
+        assert!(seg(&mut t_default, 35, 12, 3).is_some(), "default tracker should fire on 6 fpm"); // second hot → fires
+
+        // Now test with widened thresholds: same rate should NOT fire
+        let mut t_widened = RhythmTracker::with_ratio_bonus(Some(base()), 0.5, 0.0);
+        for i in 0..6 {
+            assert!(seg(&mut t_widened, i * 5, 12, 0).is_none());
+        }
+        // Same two segments: now 6.0 fpm is below the 6.75 threshold
+        assert!(seg(&mut t_widened, 30, 12, 3).is_none()); // first hot
+        assert!(
+            seg(&mut t_widened, 35, 12, 3).is_none(),
+            "widened tracker should NOT fire on 6 fpm (below 6.75 threshold)"
+        );
     }
 }
