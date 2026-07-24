@@ -26,13 +26,26 @@ const SHINE_REVERT_MS = 8000;
 const NOTE_VISIBLE_MS = 10000;
 const NOTE_FADE_MS = 400;
 
+// Quiet status words under the flame — the user asked to always be able to
+// tell what the wisp is doing. Descriptive only, never judging (no-shame).
+const CAPTIONS: Record<WispState, string> = {
+  flowing: "listening",
+  thinking: "waiting with you",
+  hot: "easy — breathe",
+  repeat: "echo noticed",
+  sleep: "asleep",
+  wondering: "wondering…",
+  shine: "shining",
+  wrapup: "ready to land",
+};
+
 // Static, trusted markup (no user data) — the ported SVG body, face-stroke
 // groups, and tuft variants from the mockup. "hook" is new: a small filled
 // flame-lick curling into a loop (↺), built in the same style as the rest,
 // for the "repeat" state the mockup didn't cover. "tuft-wrap" is likewise
 // new — a calm downward ◠-arc lick, in-style, for "wrapup" (no mockup asset).
 const SVG_MARKUP = `
-<svg viewBox="0 0 300 320" width="84" height="90" class="wisp-svg" aria-hidden="true" focusable="false">
+<svg viewBox="0 0 300 320" class="wisp-svg" aria-hidden="true" focusable="false">
   <circle class="wisp-aura" cx="150" cy="185" r="78" fill="#e8912c" opacity=".045"/>
   <g class="wisp-body">
     <path d="M114 232 Q102 186 128 148 Q140 132 143 108 Q152 128 172 140 Q200 158 192 204 Q185 244 150 248 Q124 246 114 232 Z"
@@ -102,6 +115,10 @@ export function createWisp(): Wisp {
   const note = document.createElement("div");
   note.className = "wisp-note";
   el.appendChild(note);
+  const caption = document.createElement("p");
+  caption.className = "wisp-caption";
+  caption.textContent = CAPTIONS.flowing;
+  el.appendChild(caption);
 
   let lastAppliedAt = Date.now();
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
@@ -123,6 +140,7 @@ export function createWisp(): Wisp {
 
   function applyState(s: WispState) {
     el.dataset.state = s;
+    caption.textContent = CAPTIONS[s];
     lastAppliedAt = Date.now();
     pending = null;
     clearAutoRevertTimer();
