@@ -9,12 +9,13 @@ Make the insight engine a **good but subtle assist for what's been said**. Three
 1. **Outline quality** — labels drift generic/thematic, and the model renames existing topics between passes, making the "So far" paper churn instead of grow.
 2. **Question register** — Wondering questions slip into coach/interviewer register, rehash covered ground, or float free of anything actually said.
 3. **Cadence feel** — the balance of quiet vs. chatty is untuned and, more importantly, currently unmeasurable without a live 10-minute recording session per attempt.
+4. **Legibility** — even good content is easy to miss: outline updates wipe and redraw the whole list, the question chip swaps silently and is set smaller than the outline it comments on, and several text colors (notably the timer) sit on backgrounds that make them hard to read.
 
 Governing constraint carried over from the main spec: the mirror never stops; every refinement degrades gracefully to today's behavior. New constraint from this session: **changes must be proven to help** — the replay harness is the proof mechanism, and prompt tweaks that don't show improvement on fixtures don't ship.
 
 ## Scope
 
-Three pieces (Approach B from brainstorming; Approaches A "prompt-only" and C "split calls" were considered — A is unverifiable and structurally weak against a 3B model's drift, C doubles per-cadence latency and is premature until the harness proves single-call is the bottleneck. C remains the fallback if it does.)
+Five pieces. Pieces 1–3 are Approach B from brainstorming (Approaches A "prompt-only" and C "split calls" were considered — A is unverifiable and structurally weak against a 3B model's drift, C doubles per-cadence latency and is premature until the harness proves single-call is the bottleneck. C remains the fallback if it does). Pieces 4–5 were added in a follow-up session: the refined content must also be *legible* — formatted so what's been said and what's being suggested are easily seen and intuitive — and the app's colors must never fight their background.
 
 ### 1. Prompt rewrite (`src-tauri/src/insight/prompt.rs`)
 
@@ -60,6 +61,28 @@ cargo run --example insight_replay -- fixtures/first-week-solo.txt [--model /pat
 - **Starter fixture:** one realistic ~10-minute talking-head monologue committed under `src-tauri/fixtures/`. Real session transcripts can be exported into additional fixtures later.
 - Harness failures are dev-facing only; it shares the production code path but ships nothing to users.
 
+### 4. UI legibility — live screen (`src/screens/live.ts`, `src/styles.css`)
+
+The two insight surfaces become glanceable without breaking "subtle by default" (no popups, no chimes, no layout restructuring — presence through hierarchy and motion):
+
+- **Outline visual grammar** — *brightness = now, ink = done, ghost = ahead*, no legend needed:
+  - Current topic: gold ink bar on the left edge + slightly larger bold type (replaces the `✎` glyph as the "you are here" mark).
+  - Covered topics: plain ink with a small faded tick.
+  - Intent-untouched topics: ghosted + italic with a hollow dot ("still to come").
+- **Incremental outline updates.** Replace the wipe-and-rebuild (`innerHTML = ""`) with keyed DOM updates: existing lines stay put, a new topic fades in over ~1.5s with a brief warm shimmer that decays (echo-glow language), a status change crossfades in place. The eye is drawn to exactly what changed and nothing else. Depends on the label-stability damper (piece 2) — stable labels are what make lines addressable across updates.
+- **Wondering chip presence.** Type size raised to match the outline; on a new question the old text fades out, the new fades in, and the chip's gold spine glows briefly (~4s decay). The wrap-up reuse of the chip becomes visually distinct: "Worth calling back" gets an ember-colored spine instead of gold, so wrap-up doesn't masquerade as a question.
+
+### 5. Color & contrast audit (`src/styles.css`)
+
+The Candlelit Study palette was designed against the dark desk, then some tokens got reused on parchment panels where they fail. Known offenders found in review:
+
+- `.elapsed` (the timer): `--gold-bright` `#ffe52c` rendered *inside* a light parchment panel (`#f2e6c8`) — nearly invisible. The user-reported example.
+- `.outline-current`: `--gold` `#d9a92e` text on parchment — well under readable contrast, and it's the single most important line on the screen.
+
+Fix pattern: split gold into two roles — **bright gold stays an on-desk color** (dark background), and a new **`--gold-ink`** (a darker, ink-like gold, tuned to ≥ 4.5:1 on `--paper`) is used for any gold text sitting on parchment. Then sweep every fg/bg pairing in the app (buttons, notes, meter, chips, transcript, recap, history) against WCAG AA (4.5:1 body text, 3:1 large text) and correct the failures with the same on-desk/on-paper role split. Decorative glows/underlines (shine, echo-glow) are exempt — they are never the sole carrier of information.
+
+**Locked in by test:** a small pure TS contrast function + a vitest table test asserting every declared text fg/bg pair in the design tokens meets its threshold — so a future palette tweak can't silently reintroduce an unreadable pairing.
+
 ## Error handling
 
 - All guardrails fail open to current behavior; no new panic paths. A damper or gate bug can at worst reproduce today's churn/rehash, never block the mirror.
@@ -72,6 +95,7 @@ cargo run --example insight_replay -- fixtures/first-week-solo.txt [--model /pat
 - **Existing tests updated:** prompt-content assertions gain the new schema field and register examples; worker tests script `sparked_by` in mock outputs.
 - **Non-signal tests stay first-class:** a paraphrased `sparked_by` must NOT pass the gate; a near-duplicate label must NOT create a new outline entry.
 - **Harness as regression bed:** the starter fixture run is the manual acceptance check for prompt tweaks (model output is nondeterministic across llama.cpp versions, so this is eyeball-verified dev tooling, not CI).
+- **UI:** wisp/outline state tests extended for incremental updates (a persisting label must reuse its DOM node; a new label must arrive with the fade-in class). Contrast: the token-pair vitest table described in piece 5. Final acceptance is a live browser-preview pass (per the verify-live rule) checking the outline grammar, question arrival, and the fixed timer/current-line readability.
 
 ## Success criteria
 
@@ -80,3 +104,5 @@ On the starter fixture (and a real exported session once available), compared to
 1. Outline labels remain stable pass-to-pass (no renames of persisting topics) and read as the speaker's own words.
 2. Every question shown traces to a verbatim recent phrase; none rehash covered outline entries; register stays curious-listener.
 3. The session feels subtle: no more questions than the spacing gates already allow, and fewer outline redraws than today.
+4. At a glance mid-take, the eye finds the current topic and the pending question without hunting: the outline reads as *brightness = now, ink = done, ghost = ahead*, and a newly arrived question is noticeable within a glance but never demands one.
+5. Every piece of text in the app is readable on its actual background — the timer and current-topic failures are fixed, and the contrast test keeps it that way.
