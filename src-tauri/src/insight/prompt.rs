@@ -262,6 +262,13 @@ pub fn parse_update(raw: &str, last_question: Option<&str>) -> Option<InsightUpd
         }
     }
 
+    let sparked_by = obj
+        .get("sparked_by")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
     let wrapup_ready = obj
         .get("wrapup_ready")
         .and_then(|v| v.as_bool())
@@ -271,6 +278,7 @@ pub fn parse_update(raw: &str, last_question: Option<&str>) -> Option<InsightUpd
     Some(InsightUpdate {
         outline,
         question,
+        sparked_by,
         wrapup_ready,
         shine,
     })
@@ -505,5 +513,27 @@ mod tests {
         assert!(update.question.is_none());
         assert!(!update.wrapup_ready);
         assert!(!update.shine);
+    }
+
+    #[test]
+    fn parse_update_extracts_sparked_by() {
+        let raw = r#"{"outline":[],"question":"What did the quiet feel like?","sparked_by":"the quiet after everyone left","wrapup_ready":false,"shine":false}"#;
+        let update = parse_update(raw, None).expect("should parse");
+        assert_eq!(
+            update.sparked_by.as_deref(),
+            Some("the quiet after everyone left")
+        );
+    }
+
+    #[test]
+    fn parse_update_missing_or_empty_sparked_by_is_none() {
+        let missing = r#"{"outline":[],"question":"Q?","wrapup_ready":false,"shine":false}"#;
+        assert!(parse_update(missing, None).unwrap().sparked_by.is_none());
+
+        let empty = r#"{"outline":[],"question":"Q?","sparked_by":"  ","wrapup_ready":false,"shine":false}"#;
+        assert!(parse_update(empty, None).unwrap().sparked_by.is_none());
+
+        let wrong_type = r#"{"outline":[],"question":"Q?","sparked_by":42,"wrapup_ready":false,"shine":false}"#;
+        assert!(parse_update(wrong_type, None).unwrap().sparked_by.is_none());
     }
 }

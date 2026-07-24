@@ -25,6 +25,7 @@ pub enum OutlineStatus {
 pub struct InsightUpdate {
     pub outline: Vec<OutlineEntry>, // full replacement snapshot, ≤10 entries
     pub question: Option<String>,   // at most one; None = nothing worth asking
+    pub sparked_by: Option<String>, // verbatim transcript phrase that sparked the question
     pub wrapup_ready: bool,         // model's judgment of "circling / natural close available"
     pub shine: bool,                // the most recent stretch went notably deep/personal
 }
