@@ -16,6 +16,8 @@ pub struct Session {
     pub audio_path: Option<String>,
     pub duration_ms: Option<i64>,
     pub paused_ms: i64,
+    pub filler_count: Option<i64>,
+    pub word_count: Option<i64>,
     /// Not persisted — computed at the command layer from the filesystem so
     /// the UI can tell when a recording was deleted out from under us.
     #[serde(default)]
@@ -33,6 +35,23 @@ pub struct TranscriptSegment {
     pub start_ms: i64,
     pub end_ms: i64,
     pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Event {
+    pub id: i64,
+    pub session_id: i64,
+    pub at_ms: i64,
+    pub kind: String,
+    pub note: String,
+    pub user_feedback: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Baseline {
+    pub fillers_per_min: f64,
+    pub words_per_min: f64,
+    pub sessions_counted: i64,
 }
 
 pub struct SessionStore {
@@ -92,6 +111,28 @@ impl SessionStore {
                 CREATE INDEX IF NOT EXISTS idx_segments_session
                     ON transcript_segments(session_id, start_ms);
                 PRAGMA user_version = 2;",
+            )?;
+        }
+        if version < 3 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS events (
+                    id INTEGER PRIMARY KEY,
+                    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    at_ms INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    user_feedback TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, at_ms);
+                CREATE TABLE IF NOT EXISTS baselines (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    fillers_per_min REAL NOT NULL,
+                    words_per_min REAL NOT NULL,
+                    sessions_counted INTEGER NOT NULL
+                );
+                ALTER TABLE sessions ADD COLUMN filler_count INTEGER;
+                ALTER TABLE sessions ADD COLUMN word_count INTEGER;
+                PRAGMA user_version = 3;",
             )?;
         }
         Ok(())
@@ -171,7 +212,7 @@ impl SessionStore {
     pub fn get_session(&self, id: i64) -> Result<Session, YapperError> {
         let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
         Ok(conn.query_row(
-            "SELECT id, started_at_ms, ended_at_ms, intent, audio_path, duration_ms, paused_ms
+            "SELECT id, started_at_ms, ended_at_ms, intent, audio_path, duration_ms, paused_ms, filler_count, word_count
              FROM sessions WHERE id = ?1",
             params![id],
             Self::row_to_session,
@@ -181,11 +222,78 @@ impl SessionStore {
     pub fn list_sessions(&self) -> Result<Vec<Session>, YapperError> {
         let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
         let mut stmt = conn.prepare(
-            "SELECT id, started_at_ms, ended_at_ms, intent, audio_path, duration_ms, paused_ms
+            "SELECT id, started_at_ms, ended_at_ms, intent, audio_path, duration_ms, paused_ms, filler_count, word_count
              FROM sessions ORDER BY started_at_ms DESC",
         )?;
         let rows = stmt.query_map([], Self::row_to_session)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn add_event(&self, session_id: i64, at_ms: i64, kind: &str, note: &str) -> Result<i64, YapperError> {
+        let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
+        conn.execute(
+            "INSERT INTO events (session_id, at_ms, kind, note) VALUES (?1, ?2, ?3, ?4)",
+            params![session_id, at_ms, kind, note],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn list_events(&self, session_id: i64) -> Result<Vec<Event>, YapperError> {
+        let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, at_ms, kind, note, user_feedback FROM events
+             WHERE session_id = ?1 ORDER BY at_ms",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            Ok(Event {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                at_ms: row.get(2)?,
+                kind: row.get(3)?,
+                note: row.get(4)?,
+                user_feedback: row.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn get_baseline(&self) -> Result<Option<Baseline>, YapperError> {
+        let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
+        let result = conn.query_row(
+            "SELECT fillers_per_min, words_per_min, sessions_counted FROM baselines WHERE id = 1",
+            [],
+            |row| {
+                Ok(Baseline {
+                    fillers_per_min: row.get(0)?,
+                    words_per_min: row.get(1)?,
+                    sessions_counted: row.get(2)?,
+                })
+            },
+        );
+        match result {
+            Ok(baseline) => Ok(Some(baseline)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn upsert_baseline(&self, fillers_per_min: f64, words_per_min: f64, sessions_counted: i64) -> Result<(), YapperError> {
+        let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO baselines (id, fillers_per_min, words_per_min, sessions_counted)
+             VALUES (1, ?1, ?2, ?3)",
+            params![fillers_per_min, words_per_min, sessions_counted],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_session_stats(&self, id: i64, filler_count: i64, word_count: i64) -> Result<(), YapperError> {
+        let conn = self.conn.lock().map_err(|_| YapperError::State("database lock poisoned".into()))?;
+        conn.execute(
+            "UPDATE sessions SET filler_count = ?2, word_count = ?3 WHERE id = ?1",
+            params![id, filler_count, word_count],
+        )?;
+        Ok(())
     }
 
     fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {
@@ -197,6 +305,8 @@ impl SessionStore {
             audio_path: row.get(4)?,
             duration_ms: row.get(5)?,
             paused_ms: row.get(6)?,
+            filler_count: row.get(7)?,
+            word_count: row.get(8)?,
             audio_exists: false, // filesystem check happens at the command layer
             segment_count: 0,    // filled in by the command layer via count_segments
         })
@@ -288,5 +398,40 @@ mod tests {
         store.add_segment(id, 0, 500, "x").unwrap();
         store.add_segment(id, 500, 1000, "y").unwrap();
         assert_eq!(store.count_segments(id).unwrap(), 2);
+    }
+
+    #[test]
+    fn v3_events_roundtrip_and_cascade() {
+        let store = open_test_store();
+        let id = store.create_session(1000, "").unwrap();
+        store.add_event(id, 5000, "rhythm_filler", "racing a little").unwrap();
+        let evs = store.list_events(id).unwrap();
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].kind, "rhythm_filler");
+        assert!(evs[0].user_feedback.is_none());
+        store.delete_session(id).unwrap();
+        assert!(store.list_events(id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn baseline_upsert_and_fetch() {
+        let store = open_test_store();
+        assert!(store.get_baseline().unwrap().is_none());
+        store.upsert_baseline(4.2, 150.0, 2).unwrap();
+        let b = store.get_baseline().unwrap().unwrap();
+        assert_eq!(b.sessions_counted, 2);
+        assert!((b.fillers_per_min - 4.2).abs() < 1e-6);
+        store.upsert_baseline(3.8, 148.0, 3).unwrap();
+        assert_eq!(store.get_baseline().unwrap().unwrap().sessions_counted, 3);
+    }
+
+    #[test]
+    fn session_stats_update() {
+        let store = open_test_store();
+        let id = store.create_session(1000, "").unwrap();
+        store.set_session_stats(id, 12, 300).unwrap();
+        let s = store.get_session(id).unwrap();
+        assert_eq!(s.filler_count, Some(12));
+        assert_eq!(s.word_count, Some(300));
     }
 }

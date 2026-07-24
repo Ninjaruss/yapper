@@ -14,6 +14,8 @@ export interface Session {
   audio_path: string | null;
   duration_ms: number | null;
   paused_ms: number;
+  filler_count: number | null;
+  word_count: number | null;
   audio_exists: boolean;
   segment_count: number;
 }
@@ -35,10 +37,29 @@ export interface TranscriptSegment {
   text: string;
 }
 
+export interface YapperEvent {
+  id: number;
+  session_id: number;
+  at_ms: number;
+  kind: string;
+  note: string;
+  user_feedback: string | null;
+}
+
 export interface Segment {
+  id: number;
   start_ms: number;
   end_ms: number;
   text: string;
+}
+
+export type SignalKind = "rhythm_filler" | "rhythm_pace" | "repetition";
+
+export interface Signal {
+  kind: SignalKind;
+  at_ms: number;
+  note: string;
+  echo_of_segment_id: number | null;
 }
 
 export interface ModelProgress {
@@ -59,6 +80,8 @@ export const ipc = {
   forgetSession: (id: number) => invoke<void>("forget_session", { id }),
   listSegments: (sessionId: number) =>
     invoke<TranscriptSegment[]>("list_segments", { sessionId }),
+  listEvents: (sessionId: number) =>
+    invoke<YapperEvent[]>("list_events", { sessionId }),
   modelsReady: () => invoke<boolean>("models_ready"),
   ensureModels: () => invoke<void>("ensure_models"),
   exportTranscript: (id: number) => invoke<string>("export_transcript", { id }),
@@ -66,6 +89,8 @@ export const ipc = {
     listen<number>("audio:level", (e) => cb(e.payload)),
   onSegment: (cb: (s: Segment) => void): Promise<UnlistenFn> =>
     listen<Segment>("transcript:segment", (e) => cb(e.payload)),
+  onSignal: (cb: (s: Signal) => void): Promise<UnlistenFn> =>
+    listen<Signal>("analysis:signal", (e) => cb(e.payload)),
   onModelProgress: (cb: (p: ModelProgress) => void): Promise<UnlistenFn> =>
     listen<ModelProgress>("model:progress", (e) => cb(e.payload)),
 };

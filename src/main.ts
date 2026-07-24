@@ -1,4 +1,5 @@
 import "./styles.css";
+import "./wisp.css";
 import { renderSetup } from "./screens/setup";
 import { renderLive } from "./screens/live";
 import { ipc } from "./ipc";
@@ -16,10 +17,24 @@ async function showLive() {
     const sessions = await ipc.listSessions();
     const last = sessions[0];
     const dur = last?.duration_ms != null ? fmtDuration(last.duration_ms) : "?";
+
+    // Build stats line if we have both filler and word counts
+    let statsLine = "";
+    if (last && last.filler_count != null && last.word_count != null) {
+      try {
+        const events = await ipc.listEvents(last.id);
+        const signalCount = events.length;
+        statsLine = `<p class="label">${last.word_count} words · ${last.filler_count} fillers · ${signalCount} signals</p>`;
+      } catch {
+        // Silently omit stats line on error
+      }
+    }
+
     root.innerHTML = `
       <div class="paper-panel">
         <div class="label">Talk saved</div>
         <p>${dur} · <code>${last?.audio_path ?? "?"}</code></p>
+        ${statsLine}
         <div style="display:flex; gap:10px;">
           ${last?.audio_path ? `<button id="reveal" class="quiet" style="color:var(--ink); border-color:var(--ink-soft);">Show file</button>` : ""}
           <button id="again">Back to the desk</button>

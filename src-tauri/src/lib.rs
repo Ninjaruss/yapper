@@ -1,3 +1,4 @@
+pub mod analysis;
 pub mod audio;
 pub mod error;
 pub mod export;
@@ -13,11 +14,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{Emitter, Manager, State};
 
+use analysis::Signal;
 use audio::capture::Capture;
 use error::YapperError;
 use session::{ClockState, SessionClock};
-use store::{Session, SessionStore, TranscriptSegment};
+use store::{Event, Session, SessionStore, TranscriptSegment};
 use stt::{Segment, TranscribeEngine};
+
+/// A completed session must have at least this much actual speaking time
+/// (duration minus paused time) before it's trusted to contribute to the
+/// baseline — short sessions produce noisy per-minute rates.
+const MIN_SPEAKING_MS_FOR_BASELINE: i64 = 120_000;
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
@@ -29,6 +36,7 @@ struct ActiveSession {
     capture: Capture,
     stt_worker: Option<JoinHandle<()>>,
     stt_failed: Arc<AtomicBool>,
+    analysis_worker: Option<JoinHandle<()>>,
 }
 
 struct AppState {
@@ -139,17 +147,56 @@ async fn start_session(
     });
 
     let stt_failed = Arc::new(AtomicBool::new(false));
+    // Analysis only ever runs alongside STT — it consumes the segments STT
+    // produces, so it has nothing to do on the no-STT path.
+    let mut analysis_worker = None;
     let stt_worker = if let (Some(engine), Some((_tee_tx, tee_rx))) = (engine, tee) {
-        let (seg_tx, seg_rx) = crossbeam_channel::unbounded::<Segment>();
+        let (seg_tx, seg_rx) = crossbeam_channel::unbounded::<(i64, Segment)>();
         // Forward transcribed segments to the UI, same pattern as the level
         // forwarder above; exits when the segment channel closes (i.e. once
-        // the worker thread finishes and drops its sender).
+        // the worker thread finishes and drops its sender). The DB id rides
+        // along so the UI can tag transcript lines with `data-segment-id`
+        // for the repetition-echo glow.
         let emit_app = app.clone();
         std::thread::spawn(move || {
-            while let Ok(seg) = seg_rx.recv() {
-                let _ = emit_app.emit("transcript:segment", seg);
+            while let Ok((id, seg)) = seg_rx.recv() {
+                let payload = serde_json::json!({
+                    "id": id,
+                    "start_ms": seg.start_ms,
+                    "end_ms": seg.end_ms,
+                    "text": seg.text,
+                });
+                let _ = emit_app.emit("transcript:segment", payload);
             }
         });
+
+        let (analysis_tx, analysis_rx) = crossbeam_channel::unbounded::<(i64, Segment)>();
+        let (signal_tx, signal_rx) = crossbeam_channel::unbounded::<Signal>();
+
+        // Cold start = silence: only feed a baseline into the rhythm tracker
+        // once at least MIN_BASELINE_SESSIONS have been completed.
+        let baseline = state
+            .store
+            .get_baseline()?
+            .filter(|b| b.sessions_counted >= 3);
+
+        analysis_worker = Some(analysis::worker::spawn_analysis_worker(
+            analysis_rx,
+            state.store.clone(),
+            id,
+            baseline,
+            signal_tx,
+        ));
+
+        // Forward signals to the UI, same pattern as levels/segments; exits
+        // when the analysis worker finishes and drops its sender.
+        let emit_app = app.clone();
+        std::thread::spawn(move || {
+            while let Ok(sig) = signal_rx.recv() {
+                let _ = emit_app.emit("analysis:signal", &sig);
+            }
+        });
+
         Some(stt::worker::spawn_stt_worker(
             engine,
             capture.sample_rate,
@@ -158,6 +205,7 @@ async fn start_session(
             id,
             seg_tx,
             stt_failed.clone(),
+            Some(analysis_tx),
         ))
     } else {
         None
@@ -169,6 +217,7 @@ async fn start_session(
         capture,
         stt_worker,
         stt_failed,
+        analysis_worker,
     });
     Ok(id)
 }
@@ -239,6 +288,13 @@ async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError>
     if let Some(handle) = s.stt_worker.take() {
         let _ = handle.join();
     }
+    // The STT worker's exit (above) drops its analysis_tx clone, which
+    // disconnects the analysis channel and lets this worker drain and
+    // return in bounded time — safe to join unconditionally right here,
+    // same reasoning as the STT join above.
+    if let Some(handle) = s.analysis_worker.take() {
+        let _ = handle.join();
+    }
     let final_path = stop_result.as_ref().unwrap_or(&wav_path);
     state.store.end_session(
         s.id,
@@ -247,7 +303,57 @@ async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError>
         totals.paused_ms,
     )?;
     stop_result?;
+
+    // Baseline learning: after the DB end write so duration/paused_ms exist.
+    // Never fail end_session over this — log and move on.
+    if let Err(e) = update_baseline_after_session(&state.store, s.id) {
+        eprintln!("end_session: baseline update failed: {e}");
+    }
+
     state.store.get_session(s.id).map(with_audio_exists)
+}
+
+/// Pure gate for whether a session's stats should be folded into the
+/// baseline: must have an actual transcript (`word_count` present AND
+/// nonzero — a session with STT active but nobody speaking still writes
+/// `Some(0)`, and 0 wpm would drag the rolling mean toward 0 and eventually
+/// make RhythmPace fire on any speech at all) and at least
+/// `MIN_SPEAKING_MS_FOR_BASELINE` of actual speaking time (duration minus
+/// paused time) — short sessions produce noisy per-minute rates.
+fn should_update_baseline(word_count: Option<i64>, duration_ms: Option<i64>, paused_ms: i64) -> bool {
+    let Some(duration_ms) = duration_ms else { return false };
+    match word_count {
+        Some(w) if w > 0 => (duration_ms - paused_ms) >= MIN_SPEAKING_MS_FOR_BASELINE,
+        _ => false,
+    }
+}
+
+/// Roll this session's filler/word rates into the running baseline; see
+/// `should_update_baseline` for the gating conditions.
+fn update_baseline_after_session(store: &Arc<SessionStore>, session_id: i64) -> Result<(), YapperError> {
+    let session = store.get_session(session_id)?;
+    if !should_update_baseline(session.word_count, session.duration_ms, session.paused_ms) {
+        return Ok(());
+    }
+    // Gated above, so these are safe to unwrap: `should_update_baseline`
+    // only returns true when both are present and word_count > 0.
+    let word_count = session.word_count.unwrap();
+    let duration_ms = session.duration_ms.unwrap();
+    let speaking_ms = duration_ms - session.paused_ms;
+    let filler_count = session.filler_count.unwrap_or(0);
+    let minutes = speaking_ms as f64 / 60_000.0;
+    let session_fpm = filler_count as f64 / minutes;
+    let session_wpm = word_count as f64 / minutes;
+
+    let existing = store.get_baseline()?;
+    let (prior_fpm, prior_wpm, n) = match existing {
+        Some(b) => (b.fillers_per_min, b.words_per_min, b.sessions_counted),
+        None => (0.0, 0.0, 0),
+    };
+    let new_n = n + 1;
+    let new_fpm = (prior_fpm * n as f64 + session_fpm) / new_n as f64;
+    let new_wpm = (prior_wpm * n as f64 + session_wpm) / new_n as f64;
+    store.upsert_baseline(new_fpm, new_wpm, new_n)
 }
 
 fn with_audio_exists(mut session: Session) -> Session {
@@ -283,6 +389,11 @@ fn forget_session(state: State<'_, AppState>, id: i64) -> Result<(), YapperError
 #[tauri::command]
 fn list_segments(state: State<'_, AppState>, session_id: i64) -> Result<Vec<TranscriptSegment>, YapperError> {
     state.store.list_segments(session_id)
+}
+
+#[tauri::command]
+fn list_events(state: State<'_, AppState>, session_id: i64) -> Result<Vec<Event>, YapperError> {
+    state.store.list_events(session_id)
 }
 
 #[tauri::command]
@@ -354,10 +465,54 @@ pub fn run() {
             reveal_session,
             forget_session,
             list_segments,
+            list_events,
             models_ready,
             ensure_models,
             export_transcript
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod baseline_gate_tests {
+    use super::should_update_baseline;
+
+    #[test]
+    fn no_transcript_never_updates() {
+        assert!(!should_update_baseline(None, Some(300_000), 0));
+    }
+
+    #[test]
+    fn zero_word_count_never_updates() {
+        // STT ran but nobody spoke: word_count is Some(0), not None. Must
+        // still be rejected or a silent session drags words_per_min to 0.
+        assert!(!should_update_baseline(Some(0), Some(300_000), 0));
+    }
+
+    #[test]
+    fn enough_speaking_time_updates() {
+        // 300 words over a 2-minute session with no pauses: exactly at the
+        // MIN_SPEAKING_MS_FOR_BASELINE floor.
+        assert!(should_update_baseline(Some(300), Some(120_000), 0));
+    }
+
+    #[test]
+    fn too_little_speaking_time_never_updates() {
+        // 90s of actual speaking (under the 2-minute floor) never updates,
+        // even with a healthy transcript.
+        assert!(!should_update_baseline(Some(300), Some(90_000), 0));
+    }
+
+    #[test]
+    fn paused_time_is_excluded_from_speaking_time() {
+        // 3 minutes of wall-clock duration but 100s paused leaves only 80s
+        // of actual speaking — under the floor.
+        assert!(!should_update_baseline(Some(300), Some(180_000), 100_000));
+    }
+
+    #[test]
+    fn no_duration_never_updates() {
+        assert!(!should_update_baseline(Some(300), None, 0));
+    }
 }
