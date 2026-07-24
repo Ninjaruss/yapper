@@ -2,6 +2,7 @@ import { ipc, type OutlineEntryUI, type Session } from "../ipc";
 import { escapeHtml } from "../escape";
 import { createWisp } from "../wisp";
 import { updateOutline } from "../outline";
+import { eventMatchesCombo, isTypingTarget, loadKeybinds } from "../keys";
 
 const MAX_TRANSCRIPT_LINES = 40;
 const VOICE_LEVEL_THRESHOLD = 0.02;
@@ -14,6 +15,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
   root.innerHTML = `
     <div class="paper-panel" style="display:flex; align-items:center; gap:24px;">
       <div class="elapsed" id="elapsed">0:00</div>
+      <span id="chapter" class="chapter-title"></span>
       <div class="level-meter" style="flex:1"><div id="meter"></div></div>
       <button id="pause" class="quiet">Pause listening</button>
       <button id="end">End the talk</button>
@@ -49,6 +51,23 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
 
   const wisp = createWisp();
   root.querySelector<HTMLElement>("#wispRail")!.appendChild(wisp.el);
+
+  // Hotkeys (user-configurable on the setup screen): pause/resume and end
+  // the talk without hunting for a button mid-recording. Buttons' disabled
+  // state guards double-fires; typing targets never trigger binds.
+  const keybinds = loadKeybinds();
+  const endBtn = root.querySelector<HTMLButtonElement>("#end")!;
+  const onHotkey = (e: KeyboardEvent) => {
+    if (e.repeat || isTypingTarget(e.target)) return;
+    if (eventMatchesCombo(e, keybinds.pause)) {
+      e.preventDefault();
+      pauseBtn.click();
+    } else if (eventMatchesCombo(e, keybinds.startEnd)) {
+      e.preventDefault();
+      endBtn.click();
+    }
+  };
+  window.addEventListener("keydown", onHotkey);
 
   let paused = false;
   let ended = false;
@@ -127,10 +146,16 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
   let latestOutline: OutlineEntryUI[] = [];
   let currentOutlineP: HTMLElement | null = null;
 
+  // The header names the current chapter (spec: "chapter title auto-derived
+  // from current topic") — a glance says where you are without reading the
+  // outline. Empty until the insight engine finds a current topic.
+  const chapterEl = root.querySelector<HTMLElement>("#chapter")!;
+
   let outlineUnlisten: (() => void) | null = null;
   ipc.onOutline((entries) => {
     latestOutline = entries;
     currentOutlineP = updateOutline(outlineEl, entries);
+    chapterEl.textContent = entries.find((e) => e.status === "current")?.label ?? "";
   }).then((fn) => {
     if (ended) {
       fn();
@@ -243,6 +268,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
             for (const t of glowTimers.values()) clearTimeout(t);
             glowTimers.clear();
             wisp.destroy();
+            window.removeEventListener("keydown", onHotkey);
             // Now run the recap flow with the recovered session
             onEnded(last);
           } catch (e) {
@@ -320,7 +346,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     }
   };
 
-  root.querySelector<HTMLButtonElement>("#end")!.onclick = async () => {
+  endBtn.onclick = async () => {
     if (ended) return;
     let endedSession: Session;
     try {
@@ -347,6 +373,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     for (const t of glowTimers.values()) clearTimeout(t);
     glowTimers.clear();
     wisp.destroy();
+    window.removeEventListener("keydown", onHotkey);
     onEnded(endedSession);
   };
 }

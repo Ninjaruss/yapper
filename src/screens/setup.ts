@@ -1,6 +1,16 @@
 import { ipc, type InputDevice, type Session } from "../ipc";
 import { escapeHtml } from "../escape";
 import { fmtDate, fmtDuration } from "../format";
+import { createWisp } from "../wisp";
+import {
+  DEFAULT_KEYBINDS,
+  comboFromEvent,
+  eventMatchesCombo,
+  loadKeybinds,
+  prettyCombo,
+  saveKeybinds,
+  type Keybinds,
+} from "../keys";
 
 const REFRESH_MS = 4000;
 
@@ -30,7 +40,10 @@ export function renderSetup(
   modelReadyUnlisten = null;
 
   root.innerHTML = `
-    <h1>Yapper</h1>
+    <div class="setup-header">
+      <h1>Yapper</h1>
+      <aside id="setupWisp" aria-label="companion"></aside>
+    </div>
     <div class="paper-panel">
       <div class="label">Microphone</div>
       <select id="mic"></select>
@@ -45,7 +58,20 @@ export function renderSetup(
     <div id="modelBanner"></div>
     <div id="past" style="margin-top:22px;"></div>
     <div id="trend"></div>
+    <div class="paper-panel" style="margin-top:22px; padding:14px 16px;">
+      <div class="label" style="margin-bottom:8px;">Keys</div>
+      <div class="key-row"><span>Begin / end the talk</span><kbd id="kbdStartEnd"></kbd><button class="quiet key-change" data-bind="startEnd">change</button></div>
+      <div class="key-row"><span>Pause / resume listening</span><kbd id="kbdPause"></kbd><button class="quiet key-change" data-bind="pause">change</button></div>
+      <p class="label key-hint" id="keyHint"></p>
+      <button class="quiet key-reset" id="keysReset">reset to defaults</button>
+    </div>
   `;
+
+  // The companion is present at the desk even before a talk — asleep, a
+  // pilot light. The live screen's wisp wakes fresh; this one just sleeps.
+  const wisp = createWisp();
+  wisp.setState("sleep");
+  root.querySelector<HTMLElement>("#setupWisp")!.appendChild(wisp.el);
 
   const mic = root.querySelector<HTMLSelectElement>("#mic")!;
   const errorEl = root.querySelector<HTMLParagraphElement>("#error")!;
@@ -357,6 +383,69 @@ export function renderSetup(
     `;
   }
 
+  // ---- Keys panel: show current binds, capture replacements, persist ----
+  let keybinds: Keybinds = loadKeybinds();
+  const kbdEls = {
+    pause: root.querySelector<HTMLElement>("#kbdPause")!,
+    startEnd: root.querySelector<HTMLElement>("#kbdStartEnd")!,
+  };
+  const keyHintEl = root.querySelector<HTMLElement>("#keyHint")!;
+  const renderKbds = () => {
+    kbdEls.pause.textContent = prettyCombo(keybinds.pause);
+    kbdEls.startEnd.textContent = prettyCombo(keybinds.startEnd);
+  };
+  renderKbds();
+
+  // While capturing, the next non-modifier keydown becomes the bind
+  // (Escape cancels). Capture-phase listener so the start hotkey below
+  // never fires off the very keystroke being recorded.
+  let captureCleanup: (() => void) | null = null;
+  const stopCapture = () => {
+    captureCleanup?.();
+    captureCleanup = null;
+    keyHintEl.textContent = "";
+  };
+  root.querySelectorAll<HTMLButtonElement>("button.key-change").forEach((btn) => {
+    btn.onclick = () => {
+      stopCapture();
+      const bind = btn.dataset.bind as keyof Keybinds;
+      keyHintEl.textContent = "press a key combination… (Esc cancels)";
+      const onCapture = (e: KeyboardEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.code === "Escape") {
+          stopCapture();
+          return;
+        }
+        const combo = comboFromEvent(e);
+        if (!combo) return; // bare modifier — keep waiting
+        keybinds = { ...keybinds, [bind]: combo };
+        saveKeybinds(keybinds);
+        renderKbds();
+        stopCapture();
+      };
+      window.addEventListener("keydown", onCapture, { capture: true });
+      captureCleanup = () =>
+        window.removeEventListener("keydown", onCapture, { capture: true });
+    };
+  });
+  root.querySelector<HTMLButtonElement>("#keysReset")!.onclick = () => {
+    stopCapture();
+    keybinds = { ...DEFAULT_KEYBINDS };
+    saveKeybinds(keybinds);
+    renderKbds();
+  };
+
+  // Start-the-talk hotkey. Deliberately no typing-target guard: pressing
+  // ⌘/Ctrl+Enter straight from the intent textarea is the natural flow.
+  const onHotkey = (e: KeyboardEvent) => {
+    if (!e.repeat && eventMatchesCombo(e, keybinds.startEnd)) {
+      e.preventDefault();
+      root.querySelector<HTMLButtonElement>("#start")!.click();
+    }
+  };
+  window.addEventListener("keydown", onHotkey);
+
   const refreshAll = () => {
     refreshDevices().catch((e) => { errorEl.textContent = String(e); });
     refreshPast().catch((e) => { errorEl.textContent = String(e); });
@@ -367,7 +456,10 @@ export function renderSetup(
   const cleanup = () => {
     clearInterval(timer);
     window.removeEventListener("focus", refreshAll);
+    window.removeEventListener("keydown", onHotkey);
+    stopCapture();
     stopModelListeners();
+    wisp.destroy();
   };
 
   root.querySelector<HTMLButtonElement>("#start")!.onclick = async () => {

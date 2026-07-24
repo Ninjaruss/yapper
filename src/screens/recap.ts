@@ -1,6 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { ipc, type Session, type OutlineRow, type YapperEvent, type TranscriptSegment } from "../ipc";
 import { fmtDate, fmtDuration } from "../format";
+import { coverageNote, fillersPerMinute, usualFillersPerMinute } from "../stats";
 
 // Human labels for event kinds shown in the "Moments" timeline. Unknown
 // kinds fall back to the raw kind string rather than disappearing.
@@ -295,6 +296,17 @@ export function renderRecap(
         }
         outlineEl.appendChild(p);
       }
+      const note = coverageNote(rows.map((r) => r.status));
+      if (note) {
+        const p = document.createElement("p");
+        p.className = "label";
+        p.style.marginTop = "8px";
+        p.style.marginBottom = "0";
+        p.textContent = note;
+        // Sibling of the outline container, not a child — the
+        // #recapOutline p sizing rules would out-specify .label.
+        outlineEl.insertAdjacentElement("afterend", p);
+      }
     })
     .catch((e) => {
       outlineEl.innerHTML = "";
@@ -322,9 +334,32 @@ export function renderRecap(
       }
 
       if (session.word_count != null && session.filler_count != null) {
+        const fpm = fillersPerMinute(session);
+        const fillerBit =
+          fpm != null
+            ? `${session.filler_count} fillers (${fpm.toFixed(1)}/min)`
+            : `${session.filler_count} fillers`;
         statsEl.textContent =
-          `${session.word_count} words · ${session.filler_count} fillers · ` +
+          `${session.word_count.toLocaleString()} words · ${fillerBit} · ` +
           `${events.length} signals`;
+        // "your usual" anchors the number against the speaker's own
+        // history (no-shame: their baseline, never a universal rule).
+        if (fpm != null) {
+          ipc
+            .listSessions()
+            .then((all) => {
+              const usual = usualFillersPerMinute(all, session.id);
+              if (usual != null) {
+                statsEl.textContent =
+                  `${session.word_count!.toLocaleString()} words · ` +
+                  `${session.filler_count} fillers (${fpm.toFixed(1)}/min — your usual ~${usual.toFixed(1)}) · ` +
+                  `${events.length} signals`;
+              }
+            })
+            .catch(() => {
+              /* the plain stats line above already stands */
+            });
+        }
       }
     })
     .catch((e) => {

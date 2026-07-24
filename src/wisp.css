@@ -52,7 +52,11 @@
 .wisp[data-state="sleep"] .face-closed { opacity: .7; }
 
 .wisp[data-state="sleep"] .wisp-body { transform: scale(.45) translateY(140px); }
-.wisp[data-state="sleep"] .wisp-aura { opacity: .25; }
+/* The aura is a sibling of the body, so the sleep transform doesn't carry
+   it — with the blurred glow that reads as a detached blob. A sleeping
+   candle barely glows anyway: kill the aura (and its animation, which
+   would otherwise override this opacity even while paused). */
+.wisp[data-state="sleep"] .wisp-aura { opacity: 0; animation: none; }
 .wisp[data-state="shine"] .wisp-aura { opacity: 1; }
 .wisp[data-state="wrapup"] .wisp-aura { opacity: .32; animation-play-state: paused; }
 

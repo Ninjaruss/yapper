@@ -221,6 +221,57 @@ select, textarea {
   .wondering-chip.chip-arriving { animation: none; }
 }
 
+/* Setup header: wordmark left, the sleeping companion at the desk's edge. */
+.setup-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+#setupWisp { --wisp-size: 84px; margin-top: -10px; }
+
+/* Live header: the current chapter, named — a glance says where you are. */
+.chapter-title {
+  font-style: italic;
+  color: var(--ink-soft);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Classic scrollbars (SteamOS/Linux; macOS overlay bars ignore most of
+   this) stay in the study's palette instead of stock grey. */
+:root { scrollbar-width: thin; scrollbar-color: rgba(111, 90, 51, 0.55) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgba(111, 90, 51, 0.55); border-radius: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- keys panel (setup): current binds as kbd chips + capture flow ---- */
+.key-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.key-row > span:first-child { flex: 1; }
+kbd {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  background: var(--paper-deep);
+  border: 1px solid var(--ink-soft);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 2px 8px;
+  color: var(--ink);
+  min-width: 52px;
+  text-align: center;
+}
+button.key-change, button.key-reset { padding: 4px 10px; font-size: 0.8rem; }
+button.key-reset { margin-top: 8px; }
+.key-hint {
+  margin: 6px 0 0;
+  text-transform: none;
+  letter-spacing: 0;
+  font-style: italic;
+  min-height: 1em;
+}
+
 /* ---- recap listen-back: parchment player over a hidden <audio> ----
    The native control is a white system pill that breaks the study; this
    reuses the level-meter language (warm track, gold fill) instead. */
