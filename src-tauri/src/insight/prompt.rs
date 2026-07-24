@@ -34,13 +34,14 @@ thinking out loud. You never interrupt out loud — you only produce \
 structured notes about what you're hearing. Reply with STRICT JSON only, \
 no prose, no code fences, matching exactly this schema:\n\
 {{\"outline\":[{{\"label\":\"...\",\"status\":\"covered\"|\"current\"|\"intent_untouched\"}}],\
-\"question\":\"...\"|null,\"wrapup_ready\":true|false,\"shine\":true|false}}\n\
+\"question\":\"...\"|null,\"sparked_by\":\"...\"|null,\"wrapup_ready\":true|false,\"shine\":true|false}}\n\
 \n\
 INTENT (what the speaker set out to explore):\n\
 {intent}\n\
 \n\
-CURRENT OUTLINE (keep existing labels stable when the same topic \
-continues; do not invent a new label for something already named below):\n\
+CURRENT OUTLINE (a fixed list — you may append new entries or change a \
+status, but NEVER reword, rename, or duplicate a label below; repeat \
+existing labels character for character):\n\
 {outline_block}\n\
 \n\
 RECENT TRANSCRIPT (last ~90s, oldest first):\n\
@@ -49,24 +50,24 @@ RECENT TRANSCRIPT (last ~90s, oldest first):\n\
 ELAPSED: {elapsed_minutes} minute(s) into the session.\n\
 \n\
 OUTLINE RULES:\n\
-- At most 10 entries total, short labels in the speaker's own words.\n\
-- status \"covered\": topic was raised and the speaker has moved past it.\n\
-- status \"current\": topic being spoken about right now.\n\
-- status \"intent_untouched\": named in the intent but not yet spoken about.\n\
-- Keep existing labels stable when a topic persists across updates — do \
-not rename or duplicate a label already in the outline above.\n\
+- At most 10 entries total; labels are 2-6 words in the speaker's OWN words.\n\
+- GOOD label: \"the hospital waiting room\" (concrete, their words).\n\
+- BAD label: \"Difficult emotions\" (thematic). BAD label: \"Topic 1\" (generic).\n\
+- status \"covered\": raised and moved past. \"current\": being spoken about \
+right now. \"intent_untouched\": named in the intent, not yet spoken about.\n\
 \n\
 QUESTION RULES (curious listener, not interviewer):\n\
 - At most one question. question MUST be null unless it opens genuinely \
-new, deeper ground that is not already reflected in the outline above.\n\
-- Register: a curious listener wondering alongside the speaker, never a \
-coach or interviewer extracting a lesson.\n\
-- In-register examples: \"What did the quiet feel like?\" and \"What \
-surprised you most about that?\"\n\
-- Wrong register (never do this): \"What's the lesson here?\" — that is \
-coaching, not curiosity.\n\
-- Never rehashes covered ground: never ask about anything already \
-covered in the outline above.\n\
+new, deeper ground not already in the outline above.\n\
+- sparked_by MUST be a short phrase copied EXACTLY, word for word, from \
+the RECENT TRANSCRIPT above — the moment that made you wonder. If you \
+cannot quote such a phrase, set question and sparked_by both to null.\n\
+- GOOD (curious listener): \"What did the quiet feel like?\" · \"What \
+surprised you most about that?\" · \"Where were you when you found out?\" · \
+\"What almost made you stop?\"\n\
+- BAD (coach — never): \"What's the lesson here?\"\n\
+- BAD (rehash — never ask about a covered outline entry above).\n\
+- BAD (closed yes/no — never): \"Did that upset you?\"\n\
 \n\
 SHINE: true only if the most recent stretch of transcript is notably \
 personal or deep; false otherwise.\n\
@@ -218,9 +219,10 @@ fn find_first_valid_json_object(s: &str) -> Option<serde_json::Value> {
 /// candidates if an earlier one fails, bounded attempts) -> manually
 /// extract each field (so one bad outline entry drops only that entry, not
 /// the whole update) -> clamp/normalize (outline ≤10, empty/whitespace
-/// question -> None, question identical to `last_question` -> None). Any
-/// structural failure (no valid JSON object found) returns None — the
-/// caller treats that as a no-op for this cycle.
+/// question -> None, question identical to `last_question` -> None,
+/// empty/whitespace `sparked_by` -> None). Any structural failure (no valid
+/// JSON object found) returns None — the caller treats that as a no-op for
+/// this cycle.
 pub fn parse_update(raw: &str, last_question: Option<&str>) -> Option<InsightUpdate> {
     let trimmed = raw.trim();
     let unfenced = strip_fences(trimmed);
@@ -351,12 +353,25 @@ mod tests {
         let prompt = build_prompt("intent", &[], &[], 0);
 
         assert!(prompt.contains("curious listener"));
-        assert!(prompt.contains("MUST be null unless"));
         assert!(prompt.contains("What did the quiet feel like?"));
         assert!(prompt.contains("What surprised you most about that?"));
-        assert!(prompt.contains("What's the lesson here?"));
-        assert!(prompt.contains("Wrong register"));
-        assert!(prompt.contains("never ask about anything already covered"));
+        assert!(prompt.contains("Where were you when you found out?"));
+        assert!(prompt.contains("What almost made you stop?"));
+        assert!(prompt.contains("What's the lesson here?")); // labeled BAD
+        assert!(prompt.contains("Did that upset you?")); // labeled BAD (closed)
+        assert!(prompt.contains("sparked_by"));
+        assert!(prompt.contains("copied EXACTLY"));
+    }
+
+    #[test]
+    fn build_prompt_contains_label_contract() {
+        let prompt = build_prompt("intent", &[], &[], 0);
+
+        assert!(prompt.contains("the hospital waiting room")); // GOOD example
+        assert!(prompt.contains("Difficult emotions")); // BAD example
+        assert!(prompt.contains("Topic 1")); // BAD example
+        assert!(prompt.contains("NEVER reword"));
+        assert!(prompt.contains("\"sparked_by\"")); // schema line
     }
 
     // ---- parse_update ----

@@ -35,11 +35,11 @@ pub const LLM_MODEL_FILE: &str = "model.gguf";
 /// framing shared by both.
 const SYSTEM_PROMPT: &str = "You are a silent note-taking companion. Reply with STRICT JSON only, no prose, no code fences.";
 
-/// Context window budget — matches the Task 1 spike's chosen budget (the
-/// model's trained context is far larger; this is a deliberate cap, not a
-/// model limitation). `build_prompt`'s output must fit comfortably inside
-/// this minus `MAX_OUTPUT_TOKENS`.
-const N_CTX: u32 = 2048;
+/// Context window budget. 4096 gives the richer prompt (examples + frozen
+/// outline + ~90s transcript) comfortable headroom over the former 2048
+/// while staying tiny next to Qwen2.5's 32k ceiling; KV-cache cost at 4096
+/// is negligible on the M4/Metal target.
+const N_CTX: u32 = 4096;
 
 /// Output token budget per insight call — generous headroom over the
 /// ~80-100 tokens observed in the Task 1 spike for a similarly-shaped
