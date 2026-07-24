@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use yapper_lib::insight::guard;
 use yapper_lib::insight::llama::LlamaEngine;
-use yapper_lib::insight::prompt::{build_prompt, parse_update};
+use yapper_lib::insight::prompt::{build_prompt, parse_update, MAX_OUTLINE_ENTRIES};
 use yapper_lib::insight::{InsightEngine, OutlineEntry};
 
 const CADENCE_MS: i64 = 45_000;
@@ -108,17 +108,26 @@ fn run_pass(
     };
 
     if !update.outline.is_empty() {
-        let damped = guard::damp_labels(outline, &update.outline);
-        for (inc, kept) in update.outline.iter().zip(damped.iter()) {
-            if inc.label != kept.label {
-                println!(
-                    "  outline ✗ {:?} damped rename → kept {:?}",
-                    inc.label, kept.label
-                );
+        let damped_stage = guard::damp_labels(outline, &update.outline);
+        // Report renames by membership, not position — damping can dedup,
+        // and the merge below reorders, so a positional zip lies.
+        for inc in &update.outline {
+            if !damped_stage.iter().any(|e| e.label == inc.label) {
+                if let Some(cur) = outline
+                    .iter()
+                    .find(|c| guard::labels_match(&c.label, &inc.label))
+                {
+                    println!(
+                        "  outline ✗ {:?} damped rename → kept {:?}",
+                        inc.label, cur.label
+                    );
+                }
             }
         }
-        print_outline_diff(outline, &damped);
-        *outline = damped;
+        let merged = guard::merge_outline(outline, &damped_stage, MAX_OUTLINE_ENTRIES);
+        let finalized = guard::enforce_single_current(&merged);
+        print_outline_diff(outline, &finalized);
+        *outline = finalized;
     }
 
     match (update.question.as_deref(), update.sparked_by.as_deref()) {

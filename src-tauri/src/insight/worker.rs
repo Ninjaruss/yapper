@@ -265,9 +265,17 @@ fn apply_outline(
     if outline.is_empty() {
         return;
     }
-    // Damp renames BEFORE the no-change comparison: a pure reword must
-    // resolve to the existing outline and become a no-op.
+    // Guardrail pipeline: damp renames to existing label text, MERGE into
+    // the current outline (additive — the model can add entries and move
+    // statuses but never silently drop noted ground), then collapse to a
+    // single "current". A pure reword or verbatim copy lands as a no-op.
     let damped = guard::damp_labels(&state.current_outline, outline);
+    let merged = guard::merge_outline(
+        &state.current_outline,
+        &damped,
+        crate::insight::prompt::MAX_OUTLINE_ENTRIES,
+    );
+    let damped = guard::enforce_single_current(&merged);
     if damped == state.current_outline {
         return;
     }

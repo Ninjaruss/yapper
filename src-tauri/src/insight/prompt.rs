@@ -13,6 +13,11 @@ use crate::insight::{InsightUpdate, OutlineEntry, OutlineStatus};
 /// "SO FAR" panel budget and keeps the prompt/response small.
 pub const MAX_OUTLINE_ENTRIES: usize = 10;
 
+/// Normalized forms of the example labels used in `build_prompt`'s OUTLINE
+/// RULES — small models occasionally copy them into real output, so
+/// `parse_update` filters them. Keep in sync with the prompt text.
+const EXAMPLE_LABELS: &[&str] = &["the hospital waiting room", "difficult emotions", "topic 1"];
+
 /// Builds the full instruction text sent to the insight engine.
 ///
 /// Deterministic: identical inputs always produce an identical string (no
@@ -39,13 +44,8 @@ no prose, no code fences, matching exactly this schema:\n\
 INTENT (what the speaker set out to explore):\n\
 {intent}\n\
 \n\
-CURRENT OUTLINE (a fixed list — you may append new entries or change a \
-status, but NEVER reword, rename, or duplicate a label below; repeat \
-existing labels character for character):\n\
+CURRENT OUTLINE (what the notes say so far):\n\
 {outline_block}\n\
-\n\
-RECENT TRANSCRIPT (last ~90s, oldest first):\n\
-{recent_block}\n\
 \n\
 ELAPSED: {elapsed_minutes} minute(s) into the session.\n\
 \n\
@@ -53,12 +53,23 @@ OUTLINE RULES:\n\
 - At most 10 entries total; labels are 2-6 words in the speaker's OWN words.\n\
 - GOOD label: \"the hospital waiting room\" (concrete, their words).\n\
 - BAD label: \"Difficult emotions\" (thematic). BAD label: \"Topic 1\" (generic).\n\
+- These examples are NOT part of this talk — never output them.\n\
+- A label names a TOPIC the speaker developed for at least a few \
+sentences — never a stray phrase they said once in passing.\n\
+- NEVER reword, rename, or duplicate an existing label; repeat it \
+character for character.\n\
+- ADD a new entry whenever the speaker reaches ground not yet in the \
+outline — a ten-minute talk usually accumulates 5-8 entries. An outline \
+that stops growing while the talk moves on is WRONG.\n\
 - status \"covered\": raised and moved past. \"current\": being spoken about \
 right now. \"intent_untouched\": named in the intent, not yet spoken about.\n\
+- Keep statuses moving: exactly ONE entry is \"current\" at a time, and \
+when the speaker moves on, the old current entry becomes \"covered\".\n\
 \n\
 QUESTION RULES (curious listener, not interviewer):\n\
-- At most one question. question MUST be null unless it opens genuinely \
-new, deeper ground not already in the outline above.\n\
+- At most one question. Offer one when a recent moment invites going \
+deeper — a talk usually earns a few; null only when nothing invites it \
+or it would only rehash the outline above.\n\
 - sparked_by MUST be a short phrase copied EXACTLY, word for word, from \
 the RECENT TRANSCRIPT above — the moment that made you wonder. If you \
 cannot quote such a phrase, set question and sparked_by both to null.\n\
@@ -75,6 +86,14 @@ personal or deep; false otherwise.\n\
 WRAPUP_READY: true only if the speaker seems to be circling the same \
 ground without adding anything new; this is only your vote, not the \
 final decision.\n\
+\n\
+RECENT TRANSCRIPT (last ~90s, oldest first):\n\
+{recent_block}\n\
+\n\
+YOUR FIRST JOB, every time: scan the RECENT TRANSCRIPT above for ground \
+that is not yet in the outline and ADD it as new entries. Returning the \
+outline unchanged is only correct when the transcript truly contains \
+nothing new.\n\
 \n\
 Return only the JSON object, nothing else."
     )
@@ -250,6 +269,14 @@ pub fn parse_update(raw: &str, last_question: Option<&str>) -> Option<InsightUpd
             }
         }
     }
+    // Few-shot leakage guard (harness observation: the model copied the
+    // prompt's GOOD-label example into a real outline). Any label matching
+    // one of build_prompt's example labels is dropped — they are never
+    // legitimate talk content.
+    outline.retain(|e| {
+        let n = crate::insight::guard::normalize(&e.label);
+        !EXAMPLE_LABELS.iter().any(|ex| n == *ex)
+    });
     outline.truncate(MAX_OUTLINE_ENTRIES);
 
     let mut question = obj
@@ -374,6 +401,20 @@ mod tests {
         assert!(prompt.contains("\"sparked_by\"")); // schema line
     }
 
+    #[test]
+    fn build_prompt_contains_coverage_contract() {
+        // The coverage-encouraging rules (added after the harness baseline
+        // showed the 3B model stalling at 2-4 outline entries with no
+        // covered transitions): growth expectation, single-current rule,
+        // and the softened question invitation.
+        let prompt = build_prompt("intent", &[], &[], 0);
+
+        assert!(prompt.contains("5-8 entries"));
+        assert!(prompt.contains("exactly ONE entry is \"current\""));
+        assert!(prompt.contains("becomes \"covered\""));
+        assert!(prompt.contains("Offer one when a recent moment invites"));
+    }
+
     // ---- parse_update ----
 
     #[test]
@@ -442,6 +483,18 @@ mod tests {
             r#"{"outline":[],"question":"   ","wrapup_ready":false,"shine":false}"#;
         let update_whitespace = parse_update(raw_whitespace, None).expect("should parse");
         assert!(update_whitespace.question.is_none());
+    }
+
+    #[test]
+    fn parse_update_drops_leaked_example_labels() {
+        // The GOOD/BAD label examples from build_prompt must never survive
+        // into a real outline, however the model cases/punctuates them.
+        let raw = r#"{"outline":[{"label":"The Hospital Waiting Room","status":"covered"},{"label":"real topic","status":"current"},{"label":"Topic 1","status":"covered"}],"question":null,"wrapup_ready":false,"shine":false}"#;
+
+        let update = parse_update(raw, None).expect("should parse");
+
+        assert_eq!(update.outline.len(), 1);
+        assert_eq!(update.outline[0].label, "real topic");
     }
 
     #[test]

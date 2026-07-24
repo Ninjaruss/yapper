@@ -178,7 +178,11 @@ impl InsightEngine for LlamaEngine {
         let mut sampler = LlamaSampler::chain_simple([
             LlamaSampler::top_k(40),
             LlamaSampler::top_p(0.9, 1),
-            LlamaSampler::temp(0.3),
+            // 0.45 (up from the spike's 0.3): harness runs showed the model
+            // settling into copying the outline verbatim pass after pass; a
+            // little more temperature unsticks that while staying
+            // JSON-reliable (parse_update tolerates the rest).
+            LlamaSampler::temp(0.45),
             LlamaSampler::dist(seed),
         ]);
 
