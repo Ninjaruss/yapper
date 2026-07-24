@@ -240,10 +240,10 @@ export function renderRecap(
           p.textContent = row.label;
         } else if (row.status === "current") {
           p.className = "outline-current";
-          p.textContent = `✎ ${row.label}`;
+          p.textContent = row.label;
         } else {
           p.className = "outline-intent";
-          p.textContent = `◌ ${row.label} (never got there)`;
+          p.textContent = `${row.label} (never got there)`;
         }
         outlineEl.appendChild(p);
       }

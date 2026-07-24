@@ -86,18 +86,39 @@ select, textarea {
    gold (--gold as rgb(217, 169, 46)) then eased back to nothing. */
 .echo-glow { background: rgba(217, 169, 46, 0.25); transition: background 1.5s ease; border-radius: 3px; }
 
-/* "So far" outline: Covered plain, Current bold+gold, IntentUntouched
-   ghosted. shine-underline briefly marks the Current line on insight:shine. */
+/* "So far" outline — the visual grammar is: brightness = now, ink = done,
+   ghost = ahead. Status glyphs live in CSS (::before) so element text stays
+   the pure label. shine-underline briefly marks the Current line. */
 #outline p {
   margin: 4px 0;
+  font-size: 1.06rem;
   border-bottom: 2px solid transparent;
   transition: border-bottom-color 1.2s ease;
 }
 .outline-covered { color: var(--ink); }
-.outline-current { font-weight: bold; color: var(--gold-ink); }
-.outline-intent { opacity: .55; }
+.outline-covered::before { content: "✓ "; color: var(--ink-soft); opacity: 0.6; }
+.outline-current {
+  font-weight: bold;
+  color: var(--gold-ink);
+  font-size: 1.14rem;
+  border-left: 3px solid var(--gold);
+  padding-left: 8px;
+  margin-left: -11px;
+}
+.outline-intent { opacity: 0.55; font-style: italic; }
+.outline-intent::before { content: "◌ "; }
 .outline-current.shine-underline { border-bottom-color: var(--gold-bright); }
 
+/* A new topic fades in with a warm shimmer that decays — the eye is drawn
+   to exactly what changed and nothing else. */
+@keyframes outline-arrive {
+  from { opacity: 0; background: rgba(217, 169, 46, 0.28); }
+  to { opacity: 1; background: transparent; }
+}
+.outline-arriving { animation: outline-arrive 1.5s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .outline-arriving { animation: none; }
+}
 
 /* ---- live screen layout: the outline is the mirror; the wisp lives on the
    desk beside the paper (per the approved design), not inside it ---- */
@@ -129,7 +150,6 @@ select, textarea {
 }
 
 /* The outline reads as the primary surface; the transcript recedes. */
-#outline p { font-size: 1.06rem; }
 .transcript-panel #transcript p {
   font-size: 0.92rem;
   color: #5f5138;

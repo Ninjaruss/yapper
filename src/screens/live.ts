@@ -1,6 +1,7 @@
 import { ipc, type OutlineEntryUI, type Session } from "../ipc";
 import { escapeHtml } from "../escape";
 import { createWisp } from "../wisp";
+import { updateOutline } from "../outline";
 
 const MAX_TRANSCRIPT_LINES = 40;
 const VOICE_LEVEL_THRESHOLD = 0.02;
@@ -121,35 +122,15 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     }
   });
 
-  // Outline rendering uses textContent (not innerHTML) throughout: labels
-  // are LLM-derived and can echo raw spoken words, so they must never be
-  // parsed as markup — same discipline as the transcript's escapeHtml.
+  // Outline rendering lives in outline.ts (incremental, keyed by label;
+  // textContent only — labels are LLM-derived and never parsed as markup).
   let latestOutline: OutlineEntryUI[] = [];
   let currentOutlineP: HTMLElement | null = null;
-  function rebuildOutline(entries: OutlineEntryUI[]) {
-    latestOutline = entries;
-    outlineEl.innerHTML = "";
-    currentOutlineP = null;
-    for (const entry of entries) {
-      const p = document.createElement("p");
-      if (entry.status === "covered") {
-        p.className = "outline-covered";
-        p.textContent = entry.label;
-      } else if (entry.status === "current") {
-        p.className = "outline-current";
-        p.textContent = `✎ ${entry.label}`;
-        currentOutlineP = p;
-      } else {
-        p.className = "outline-intent";
-        p.textContent = `◌ ${entry.label}`;
-      }
-      outlineEl.appendChild(p);
-    }
-  }
 
   let outlineUnlisten: (() => void) | null = null;
   ipc.onOutline((entries) => {
-    rebuildOutline(entries);
+    latestOutline = entries;
+    currentOutlineP = updateOutline(outlineEl, entries);
   }).then((fn) => {
     if (ended) {
       fn();
