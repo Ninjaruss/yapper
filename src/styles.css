@@ -8,6 +8,7 @@
   --ink-soft: #6f5a33;
   --gold: #d9a92e;
   --gold-bright: #ffe52c;
+  --gold-ink: #6b4f0f; /* gold for TEXT ON PARCHMENT — bright golds are desk-only */
   --ember: #e8912c;
   --meter-bg: rgba(0, 0, 0, 0.4);
   --serif: Georgia, "Iowan Old Style", serif;
@@ -78,7 +79,7 @@ select, textarea {
   transition: width 80ms linear;
 }
 
-.elapsed { font-family: var(--mono); font-size: 2.4rem; color: var(--gold-bright); }
+.elapsed { font-family: var(--mono); font-size: 2.4rem; color: var(--gold-ink); }
 .paused-note { color: var(--ember); font-style: italic; }
 
 /* Repetition-echo glow: the transcript line being echoed, briefly tinted
@@ -93,7 +94,7 @@ select, textarea {
   transition: border-bottom-color 1.2s ease;
 }
 .outline-covered { color: var(--ink); }
-.outline-current { font-weight: bold; color: var(--gold); }
+.outline-current { font-weight: bold; color: var(--gold-ink); }
 .outline-intent { opacity: .55; }
 .outline-current.shine-underline { border-bottom-color: var(--gold-bright); }
 
