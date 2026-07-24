@@ -1,4 +1,4 @@
-import { ipc } from "../ipc";
+import { ipc, type OutlineEntryUI, type Session } from "../ipc";
 import { escapeHtml } from "../escape";
 import { createWisp } from "../wisp";
 
@@ -7,8 +7,9 @@ const VOICE_LEVEL_THRESHOLD = 0.02;
 const FLOWING_WITHIN_MS = 1500;
 const THINKING_AFTER_MS = 2500;
 const ECHO_GLOW_MS = 4000;
+const SHINE_UNDERLINE_MS = 4000;
 
-export function renderLive(root: HTMLElement, onEnded: () => void): void {
+export function renderLive(root: HTMLElement, onEnded: (session: Session) => void): void {
   root.innerHTML = `
     <div class="paper-panel" style="display:flex; align-items:center; gap:24px;">
       <div class="elapsed" id="elapsed">0:00</div>
@@ -19,6 +20,12 @@ export function renderLive(root: HTMLElement, onEnded: () => void): void {
     <p id="state" class="paused-note" role="status"></p>
     <div class="paper-panel" style="margin-top:16px;">
       <div class="label">So far</div>
+      <div id="outline"></div>
+      <div class="label" id="wonderingLabel" style="margin-top:10px; display:none;">Wondering</div>
+      <p id="wondering" style="font-style:italic; display:none;"></p>
+    </div>
+    <div class="paper-panel" style="margin-top:16px;">
+      <div class="label">Transcript</div>
       <div id="transcript" style="max-height:50vh; overflow-y:auto; font-style:normal;"></div>
       <p id="sttState" class="paused-note" style="margin-bottom:0;"></p>
     </div>
@@ -28,6 +35,9 @@ export function renderLive(root: HTMLElement, onEnded: () => void): void {
   const meterEl = root.querySelector<HTMLElement>("#meter")!;
   const stateEl = root.querySelector<HTMLElement>("#state")!;
   const pauseBtn = root.querySelector<HTMLButtonElement>("#pause")!;
+  const outlineEl = root.querySelector<HTMLElement>("#outline")!;
+  const wonderingLabelEl = root.querySelector<HTMLElement>("#wonderingLabel")!;
+  const wonderingEl = root.querySelector<HTMLElement>("#wondering")!;
   const transcriptEl = root.querySelector<HTMLElement>("#transcript")!;
   const sttStateEl = root.querySelector<HTMLElement>("#sttState")!;
 
@@ -105,6 +115,99 @@ export function renderLive(root: HTMLElement, onEnded: () => void): void {
     }
   });
 
+  // Outline rendering uses textContent (not innerHTML) throughout: labels
+  // are LLM-derived and can echo raw spoken words, so they must never be
+  // parsed as markup — same discipline as the transcript's escapeHtml.
+  let latestOutline: OutlineEntryUI[] = [];
+  let currentOutlineP: HTMLElement | null = null;
+  function rebuildOutline(entries: OutlineEntryUI[]) {
+    latestOutline = entries;
+    outlineEl.innerHTML = "";
+    currentOutlineP = null;
+    for (const entry of entries) {
+      const p = document.createElement("p");
+      if (entry.status === "covered") {
+        p.className = "outline-covered";
+        p.textContent = entry.label;
+      } else if (entry.status === "current") {
+        p.className = "outline-current";
+        p.textContent = `✎ ${entry.label}`;
+        currentOutlineP = p;
+      } else {
+        p.className = "outline-intent";
+        p.textContent = `◌ ${entry.label}`;
+      }
+      outlineEl.appendChild(p);
+    }
+  }
+
+  let outlineUnlisten: (() => void) | null = null;
+  ipc.onOutline((entries) => {
+    rebuildOutline(entries);
+  }).then((fn) => {
+    if (ended) {
+      fn();
+    } else {
+      outlineUnlisten = fn;
+    }
+  });
+
+  let questionUnlisten: (() => void) | null = null;
+  ipc.onQuestion((question) => {
+    wonderingLabelEl.textContent = "Wondering";
+    wonderingLabelEl.style.display = "";
+    wonderingEl.textContent = question;
+    wonderingEl.style.display = "";
+    wisp.setState("wondering");
+  }).then((fn) => {
+    if (ended) {
+      fn();
+    } else {
+      questionUnlisten = fn;
+    }
+  });
+
+  let shineUnderlineTimer: ReturnType<typeof setTimeout> | undefined;
+  let shineUnlisten: (() => void) | null = null;
+  ipc.onShine(() => {
+    wisp.setState("shine");
+    if (currentOutlineP) {
+      const el = currentOutlineP;
+      el.classList.add("shine-underline");
+      if (shineUnderlineTimer !== undefined) clearTimeout(shineUnderlineTimer);
+      shineUnderlineTimer = setTimeout(() => {
+        shineUnderlineTimer = undefined;
+        el.classList.remove("shine-underline");
+      }, SHINE_UNDERLINE_MS);
+    }
+  }).then((fn) => {
+    if (ended) {
+      fn();
+    } else {
+      shineUnlisten = fn;
+    }
+  });
+
+  let wrapupUnlisten: (() => void) | null = null;
+  ipc.onWrapup(() => {
+    wisp.setState("wrapup");
+    const worthCallingBack = latestOutline
+      .filter((e) => e.status === "covered")
+      .slice(0, 2)
+      .map((e) => e.label)
+      .join(" · ");
+    wonderingLabelEl.textContent = "Worth calling back";
+    wonderingLabelEl.style.display = "";
+    wonderingEl.textContent = worthCallingBack;
+    wonderingEl.style.display = "";
+  }).then((fn) => {
+    if (ended) {
+      fn();
+    } else {
+      wrapupUnlisten = fn;
+    }
+  });
+
   const timer = setInterval(async () => {
     const status = await ipc.sessionStatus();
     if (!status) return;
@@ -119,6 +222,17 @@ export function renderLive(root: HTMLElement, onEnded: () => void): void {
       sttStateEl.textContent = "transcription hit trouble earlier this session — audio still recording";
     } else {
       sttStateEl.textContent = "";
+    }
+    if (status.insight_failed) {
+      sttStateEl.textContent = sttStateEl.textContent
+        ? `${sttStateEl.textContent} · insight resting`
+        : "insight resting";
+    }
+    if (!status.insight_active && latestOutline.length === 0 && outlineEl.children.length === 0) {
+      const p = document.createElement("p");
+      p.className = "outline-intent";
+      p.textContent = "the thinking model is off — mirror only";
+      outlineEl.appendChild(p);
     }
 
     if (!paused) {
@@ -157,8 +271,9 @@ export function renderLive(root: HTMLElement, onEnded: () => void): void {
   };
 
   root.querySelector<HTMLButtonElement>("#end")!.onclick = async () => {
+    let endedSession: Session;
     try {
-      await ipc.endSession();
+      endedSession = await ipc.endSession();
     } catch (e) {
       stateEl.textContent = String(e);
       // Deliberately not cleaning up here: endSession() failed, so the
@@ -173,9 +288,14 @@ export function renderLive(root: HTMLElement, onEnded: () => void): void {
     unlisten?.();
     segmentUnlisten?.();
     signalUnlisten?.();
+    outlineUnlisten?.();
+    questionUnlisten?.();
+    shineUnlisten?.();
+    wrapupUnlisten?.();
+    if (shineUnderlineTimer !== undefined) clearTimeout(shineUnderlineTimer);
     for (const t of glowTimers.values()) clearTimeout(t);
     glowTimers.clear();
     wisp.destroy();
-    onEnded();
+    onEnded(endedSession);
   };
 }

@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod audio;
 pub mod error;
 pub mod export;
+pub mod insight;
 pub mod models;
 pub mod session;
 pub mod store;
@@ -17,9 +18,15 @@ use tauri::{Emitter, Manager, State};
 use analysis::Signal;
 use audio::capture::Capture;
 use error::YapperError;
+use insight::worker::{InsightDeps, InsightEvent};
+use insight::InsightEngine;
 use session::{ClockState, SessionClock};
-use store::{Event, Session, SessionStore, TranscriptSegment};
+use store::{Event, OutlineRow, Session, SessionStore, TranscriptSegment};
 use stt::{Segment, TranscribeEngine};
+
+/// Insight worker cadence in production (injectable for tests — see
+/// `insight::worker::spawn_insight_worker`'s `cadence_ms` parameter).
+const INSIGHT_CADENCE_MS: u64 = 45_000;
 
 /// A completed session must have at least this much actual speaking time
 /// (duration minus paused time) before it's trusted to contribute to the
@@ -27,7 +34,10 @@ use stt::{Segment, TranscribeEngine};
 const MIN_SPEAKING_MS_FOR_BASELINE: i64 = 120_000;
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
 }
 
 struct ActiveSession {
@@ -37,6 +47,8 @@ struct ActiveSession {
     stt_worker: Option<JoinHandle<()>>,
     stt_failed: Arc<AtomicBool>,
     analysis_worker: Option<JoinHandle<()>>,
+    insight_worker: Option<JoinHandle<()>>,
+    insight_failed: Arc<AtomicBool>,
 }
 
 struct AppState {
@@ -67,7 +79,10 @@ async fn start_session(
     // Send, so holding one across an await point would break this future's
     // Send bound — a compile error on a multi-threaded async runtime).
     {
-        let active = state.active.lock().map_err(|_| YapperError::State("state lock poisoned".into()))?;
+        let active = state
+            .active
+            .lock()
+            .map_err(|_| YapperError::State("state lock poisoned".into()))?;
         if active.is_some() {
             return Err(YapperError::State("a session is already running".into()));
         }
@@ -77,11 +92,13 @@ async fn start_session(
     // `spawn_blocking` (model init does blocking file I/O) *before* touching
     // any session state. If models are missing or init fails, recording must
     // still proceed without STT (zero-setup / mirror-never-stops principle).
-    let model_dir = models::model_dir(&app).ok();
-    let engine: Option<Box<dyn TranscribeEngine>> = match model_dir {
-        Some(dir) if models::models_present(&dir) => {
-            match tauri::async_runtime::spawn_blocking(move || stt::moonshine::MoonshineEngine::new(&dir))
-                .await
+    let stt_dir = models::model_dir_for(&app, &models::STT_MODEL).ok();
+    let engine: Option<Box<dyn TranscribeEngine>> = match stt_dir {
+        Some(dir) if models::files_present(&dir, models::STT_MODEL.files) => {
+            match tauri::async_runtime::spawn_blocking(move || {
+                stt::moonshine::MoonshineEngine::new(&dir)
+            })
+            .await
             {
                 Ok(Ok(e)) => Some(Box::new(e) as Box<dyn TranscribeEngine>),
                 Ok(Err(e)) => {
@@ -97,11 +114,54 @@ async fn start_session(
         _ => None,
     };
 
+    // Same pattern for the insight (LLM) engine, gated on both the model
+    // being present AND STT actually being active this session — an LLM
+    // with no transcript to read is useless, so there is nothing to spawn
+    // it for. Loaded before the second lock check for the same reason as
+    // the STT engine above: model init does blocking file I/O and must not
+    // happen while holding the state lock.
+    let insight_engine: Option<Box<dyn InsightEngine>> = if engine.is_some()
+        && models::model_present(&app, &models::LLM_MODEL)
+    {
+        match models::model_dir_for(&app, &models::LLM_MODEL) {
+            Ok(dir) => {
+                match tauri::async_runtime::spawn_blocking(move || {
+                    insight::llama::LlamaEngine::new(&dir)
+                })
+                .await
+                {
+                    Ok(Ok(e)) => Some(Box::new(e) as Box<dyn InsightEngine>),
+                    Ok(Err(e)) => {
+                        eprintln!(
+                            "insight: LlamaEngine::new failed, continuing without insight: {e}"
+                        );
+                        None
+                    }
+                    Err(join_err) => {
+                        eprintln!(
+                            "insight: model init task panicked, continuing without insight: {join_err}"
+                        );
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("insight: could not resolve model dir, continuing without insight: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Second check: another session may have started while we were awaiting
     // model init above. Re-acquire the lock and re-check before touching any
-    // session state; if one snuck in, bail out (the just-loaded `engine`, if
-    // any, is simply dropped here).
-    let mut active = state.active.lock().map_err(|_| YapperError::State("state lock poisoned".into()))?;
+    // session state; if one snuck in, bail out (the just-loaded `engine` and
+    // `insight_engine`, if any, are simply dropped here).
+    let mut active = state
+        .active
+        .lock()
+        .map_err(|_| YapperError::State("state lock poisoned".into()))?;
     if active.is_some() {
         return Err(YapperError::State("a session is already running".into()));
     }
@@ -109,7 +169,9 @@ async fn start_session(
     let started = now_ms();
     let id = state.store.create_session(started, &intent)?;
 
-    let tee = engine.is_some().then(|| crossbeam_channel::bounded::<Vec<f32>>(256));
+    let tee = engine
+        .is_some()
+        .then(|| crossbeam_channel::bounded::<Vec<f32>>(256));
     let tee_tx = tee.as_ref().map(|(tx, _)| tx.clone());
 
     let setup_result = (|| -> Result<Capture, YapperError> {
@@ -147,9 +209,11 @@ async fn start_session(
     });
 
     let stt_failed = Arc::new(AtomicBool::new(false));
-    // Analysis only ever runs alongside STT — it consumes the segments STT
-    // produces, so it has nothing to do on the no-STT path.
+    let insight_failed = Arc::new(AtomicBool::new(false));
+    // Analysis and insight only ever run alongside STT — both consume the
+    // segments STT produces, so they have nothing to do on the no-STT path.
     let mut analysis_worker = None;
+    let mut insight_worker = None;
     let stt_worker = if let (Some(engine), Some((_tee_tx, tee_rx))) = (engine, tee) {
         let (seg_tx, seg_rx) = crossbeam_channel::unbounded::<(i64, Segment)>();
         // Forward transcribed segments to the UI, same pattern as the level
@@ -197,6 +261,59 @@ async fn start_session(
             }
         });
 
+        // Insight only spawns when the LLM engine actually loaded above
+        // (gated on model presence + STT being active). `insight_seg_tx`
+        // becomes the STT worker's third tee; `None` here means the STT
+        // worker simply never sends on that tee (see `stt::worker`'s
+        // `insight_tx` parameter).
+        let insight_seg_tx = if let Some(insight_engine) = insight_engine {
+            let (insight_seg_tx, insight_seg_rx) = crossbeam_channel::unbounded::<(i64, Segment)>();
+            let (event_tx, event_rx) = crossbeam_channel::unbounded::<InsightEvent>();
+
+            let typical_ms = state.store.typical_session_ms().ok().flatten();
+            let deps = InsightDeps {
+                store: state.store.clone(),
+                session_id: id,
+                intent: intent.clone(),
+                typical_ms,
+            };
+            insight_worker = Some(insight::worker::spawn_insight_worker(
+                insight_engine,
+                insight_seg_rx,
+                deps,
+                event_tx,
+                insight_failed.clone(),
+                INSIGHT_CADENCE_MS,
+            ));
+
+            // Forward insight events to the UI, same pattern as levels/
+            // segments/signals; exits when the insight worker finishes and
+            // drops its sender.
+            let emit_app = app.clone();
+            std::thread::spawn(move || {
+                while let Ok(event) = event_rx.recv() {
+                    match event {
+                        InsightEvent::Outline(entries) => {
+                            let _ = emit_app.emit("insight:outline", entries);
+                        }
+                        InsightEvent::Question(q) => {
+                            let _ = emit_app.emit("insight:question", q);
+                        }
+                        InsightEvent::WrapupReady => {
+                            let _ = emit_app.emit("insight:wrapup", true);
+                        }
+                        InsightEvent::Shine => {
+                            let _ = emit_app.emit("insight:shine", true);
+                        }
+                    }
+                }
+            });
+
+            Some(insight_seg_tx)
+        } else {
+            None
+        };
+
         Some(stt::worker::spawn_stt_worker(
             engine,
             capture.sample_rate,
@@ -206,6 +323,7 @@ async fn start_session(
             seg_tx,
             stt_failed.clone(),
             Some(analysis_tx),
+            insight_seg_tx,
         ))
     } else {
         None
@@ -218,25 +336,41 @@ async fn start_session(
         stt_worker,
         stt_failed,
         analysis_worker,
+        insight_worker,
+        insight_failed,
     });
     Ok(id)
 }
 
 #[tauri::command]
 fn pause_listening(state: State<'_, AppState>) -> Result<(), YapperError> {
-    let mut active = state.active.lock().map_err(|_| YapperError::State("state lock poisoned".into()))?;
-    let s = active.as_mut().ok_or_else(|| YapperError::State("no session".into()))?;
+    let mut active = state
+        .active
+        .lock()
+        .map_err(|_| YapperError::State("state lock poisoned".into()))?;
+    let s = active
+        .as_mut()
+        .ok_or_else(|| YapperError::State("no session".into()))?;
     s.clock.pause(now_ms())?;
-    s.capture.paused.store(true, std::sync::atomic::Ordering::Relaxed);
+    s.capture
+        .paused
+        .store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
 #[tauri::command]
 fn resume_listening(state: State<'_, AppState>) -> Result<(), YapperError> {
-    let mut active = state.active.lock().map_err(|_| YapperError::State("state lock poisoned".into()))?;
-    let s = active.as_mut().ok_or_else(|| YapperError::State("no session".into()))?;
+    let mut active = state
+        .active
+        .lock()
+        .map_err(|_| YapperError::State("state lock poisoned".into()))?;
+    let s = active
+        .as_mut()
+        .ok_or_else(|| YapperError::State("no session".into()))?;
     s.clock.resume(now_ms())?;
-    s.capture.paused.store(false, std::sync::atomic::Ordering::Relaxed);
+    s.capture
+        .paused
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
@@ -248,11 +382,16 @@ struct SessionStatus {
     writer_failed: bool,
     stt_active: bool,
     stt_failed: bool,
+    insight_active: bool,
+    insight_failed: bool,
 }
 
 #[tauri::command]
 fn session_status(state: State<'_, AppState>) -> Result<Option<SessionStatus>, YapperError> {
-    let active = state.active.lock().map_err(|_| YapperError::State("state lock poisoned".into()))?;
+    let active = state
+        .active
+        .lock()
+        .map_err(|_| YapperError::State("state lock poisoned".into()))?;
     Ok(active.as_ref().map(|s| SessionStatus {
         id: s.id,
         state: match s.clock.state() {
@@ -265,20 +404,33 @@ fn session_status(state: State<'_, AppState>) -> Result<Option<SessionStatus>, Y
         writer_failed: s.capture.writer_failed.load(Ordering::Relaxed),
         stt_active: s.stt_worker.is_some(),
         stt_failed: s.stt_failed.load(Ordering::Relaxed),
+        insight_active: s.insight_worker.is_some(),
+        insight_failed: s.insight_failed.load(Ordering::Relaxed),
     }))
 }
 
 // Async for the same main-thread reason as start_session — see comment there.
 #[tauri::command]
 async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError> {
-    let mut active = state.active.lock().map_err(|_| YapperError::State("state lock poisoned".into()))?;
-    let mut s = active.take().ok_or_else(|| YapperError::State("no session".into()))?;
+    let mut active = state
+        .active
+        .lock()
+        .map_err(|_| YapperError::State("state lock poisoned".into()))?;
+    let mut s = active
+        .take()
+        .ok_or_else(|| YapperError::State("no session".into()))?;
     let totals = s.clock.end(now_ms());
     // Capture the known WAV path before stop() consumes self, so the DB
     // record can still be written even if stop() itself errors out — the
     // WAV is flushed per buffer, so the file is still largely recoverable.
     let wav_path = s.capture.wav_path.clone();
     let stop_result = s.capture.stop();
+    // Guard dropped here so status/pause polls stay live during the
+    // (LLM-bounded) worker joins: the mic is already released by this point
+    // (Capture::stop joins the stream thread internally), `s` is owned by
+    // this function from here on, and SessionStore self-synchronizes — so
+    // nothing below needs `state.active` held.
+    drop(active);
     // Join the STT worker immediately after capture.stop(), and before the
     // fallible DB write below: stop() has already sent the tee's shutdown
     // sentinel (and disconnected the channel), so the worker flushes
@@ -293,6 +445,17 @@ async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError>
     // return in bounded time — safe to join unconditionally right here,
     // same reasoning as the STT join above.
     if let Some(handle) = s.analysis_worker.take() {
+        let _ = handle.join();
+    }
+    // Same reasoning again, one more link down the chain: the STT worker's
+    // exit also dropped its insight_tx clone (its third tee), which
+    // disconnects the insight channel and lets the insight worker run its
+    // final pass (if segments arrived since its last cadence tick) and
+    // return. Joined last — and after the analysis join above, not
+    // concurrently with it — so the shutdown order is always
+    // stt -> analysis -> insight -> DB write, matching every other worker
+    // join in this function.
+    if let Some(handle) = s.insight_worker.take() {
         let _ = handle.join();
     }
     let final_path = stop_result.as_ref().unwrap_or(&wav_path);
@@ -320,8 +483,14 @@ async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError>
 /// make RhythmPace fire on any speech at all) and at least
 /// `MIN_SPEAKING_MS_FOR_BASELINE` of actual speaking time (duration minus
 /// paused time) — short sessions produce noisy per-minute rates.
-fn should_update_baseline(word_count: Option<i64>, duration_ms: Option<i64>, paused_ms: i64) -> bool {
-    let Some(duration_ms) = duration_ms else { return false };
+fn should_update_baseline(
+    word_count: Option<i64>,
+    duration_ms: Option<i64>,
+    paused_ms: i64,
+) -> bool {
+    let Some(duration_ms) = duration_ms else {
+        return false;
+    };
     match word_count {
         Some(w) if w > 0 => (duration_ms - paused_ms) >= MIN_SPEAKING_MS_FOR_BASELINE,
         _ => false,
@@ -330,7 +499,10 @@ fn should_update_baseline(word_count: Option<i64>, duration_ms: Option<i64>, pau
 
 /// Roll this session's filler/word rates into the running baseline; see
 /// `should_update_baseline` for the gating conditions.
-fn update_baseline_after_session(store: &Arc<SessionStore>, session_id: i64) -> Result<(), YapperError> {
+fn update_baseline_after_session(
+    store: &Arc<SessionStore>,
+    session_id: i64,
+) -> Result<(), YapperError> {
     let session = store.get_session(session_id)?;
     if !should_update_baseline(session.word_count, session.duration_ms, session.paused_ms) {
         return Ok(());
@@ -387,7 +559,10 @@ fn forget_session(state: State<'_, AppState>, id: i64) -> Result<(), YapperError
 }
 
 #[tauri::command]
-fn list_segments(state: State<'_, AppState>, session_id: i64) -> Result<Vec<TranscriptSegment>, YapperError> {
+fn list_segments(
+    state: State<'_, AppState>,
+    session_id: i64,
+) -> Result<Vec<TranscriptSegment>, YapperError> {
     state.store.list_segments(session_id)
 }
 
@@ -397,16 +572,60 @@ fn list_events(state: State<'_, AppState>, session_id: i64) -> Result<Vec<Event>
 }
 
 #[tauri::command]
-fn models_ready(app: tauri::AppHandle) -> Result<bool, YapperError> {
-    Ok(models::models_present(&models::model_dir(&app)?))
+fn list_outline(
+    state: State<'_, AppState>,
+    session_id: i64,
+) -> Result<Vec<OutlineRow>, YapperError> {
+    state.store.list_outline(session_id)
 }
 
-// Async: `models::ensure_models` is a blocking call (synchronous network I/O
-// and archive extraction), so it must run on a blocking-friendly thread
-// rather than stalling an async worker or, worse, the main thread.
+/// Recap screen's one-click "that was wrong" — no-shame feedback on a fired
+/// signal, recorded and otherwise ceremony-free (see spec's no-shame recap
+/// rule).
+#[tauri::command]
+fn set_event_feedback(
+    state: State<'_, AppState>,
+    event_id: i64,
+    feedback: String,
+) -> Result<(), YapperError> {
+    state.store.set_event_feedback(event_id, &feedback)
+}
+
+/// Back-compat shape for the frontend: which of the two models are already
+/// downloaded. Cheap, no network — safe to poll from a non-async command.
+#[derive(serde::Serialize)]
+struct ModelsReady {
+    stt: bool,
+    llm: bool,
+}
+
+#[tauri::command]
+fn models_ready(app: tauri::AppHandle) -> Result<ModelsReady, YapperError> {
+    Ok(ModelsReady {
+        stt: models::model_present(&app, &models::STT_MODEL),
+        llm: models::model_present(&app, &models::LLM_MODEL),
+    })
+}
+
+// Async: `models::ensure_model` is a blocking call (synchronous network I/O
+// and, for the STT archive, synchronous extraction), so it must run on a
+// blocking-friendly thread rather than stalling an async worker or, worse,
+// the main thread. Downloads both models sequentially — STT first, then LLM
+// — one at a time, so the frontend only ever needs to track a single
+// progress bar (`model:progress`'s `model` field says which one is active).
+// Each `ensure_model` call short-circuits instantly if its model is already
+// present, so re-invoking this after a partial success (e.g. STT succeeded,
+// LLM failed) only re-downloads what's still missing.
 #[tauri::command]
 async fn ensure_models(app: tauri::AppHandle) -> Result<(), YapperError> {
-    tauri::async_runtime::spawn_blocking(move || models::ensure_models(&app))
+    let stt_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        models::ensure_model(&stt_app, &models::STT_MODEL)
+    })
+    .await
+    .map_err(|e| YapperError::State(format!("model download task panicked: {e}")))??;
+
+    tauri::async_runtime::spawn_blocking(move || models::ensure_model(&app, &models::LLM_MODEL))
         .await
         .map_err(|e| YapperError::State(format!("model download task panicked: {e}")))??;
     Ok(())
@@ -451,7 +670,10 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir)?;
             let store = SessionStore::open(&data_dir.join("yapper.db"))
                 .expect("failed to open session store");
-            app.manage(AppState { store: Arc::new(store), active: Mutex::new(None) });
+            app.manage(AppState {
+                store: Arc::new(store),
+                active: Mutex::new(None),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -466,6 +688,8 @@ pub fn run() {
             forget_session,
             list_segments,
             list_events,
+            list_outline,
+            set_event_feedback,
             models_ready,
             ensure_models,
             export_transcript

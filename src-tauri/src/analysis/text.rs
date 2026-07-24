@@ -66,6 +66,9 @@ mod tests {
 
     #[test]
     fn normalize_strips_punct_and_lowercases() {
-        assert_eq!(normalize_words("It's DONE, right?"), vec!["it's", "done", "right"]);
+        assert_eq!(
+            normalize_words("It's DONE, right?"),
+            vec!["it's", "done", "right"]
+        );
     }
 }

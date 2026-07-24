@@ -9,8 +9,8 @@ use std::thread::JoinHandle;
 
 use crossbeam_channel::{Receiver, Sender};
 
-use super::rhythm::RhythmTracker;
 use super::repetition::RepetitionDetector;
+use super::rhythm::RhythmTracker;
 use super::text::{count_fillers, word_count};
 use super::{Signal, SignalKind};
 use crate::store::{Baseline, SessionStore};
@@ -63,7 +63,12 @@ pub fn spawn_analysis_worker(
             let signal = rhythm_signal.or(repetition_signal);
 
             if let Some(signal) = signal {
-                if let Err(e) = store.add_event(session_id, signal.at_ms, kind_str(signal.kind), &signal.note) {
+                if let Err(e) = store.add_event(
+                    session_id,
+                    signal.at_ms,
+                    kind_str(signal.kind),
+                    &signal.note,
+                ) {
                     eprintln!("analysis worker: add_event failed: {e}");
                 }
                 let _ = signal_tx.send(signal);
@@ -86,7 +91,11 @@ mod tests {
     use std::time::Duration;
 
     fn base() -> Baseline {
-        Baseline { fillers_per_min: 3.0, words_per_min: 150.0, sessions_counted: 5 }
+        Baseline {
+            fillers_per_min: 3.0,
+            words_per_min: 150.0,
+            sessions_counted: 5,
+        }
     }
 
     fn join_with_watchdog(handle: JoinHandle<()>) {
@@ -125,15 +134,38 @@ mod tests {
         ];
         for (i, text) in calm.iter().enumerate() {
             let i = i as i64;
-            tx.send((i, Segment { start_ms: i * 5_000, end_ms: i * 5_000 + 4_000, text: (*text).into() }))
-                .unwrap();
+            tx.send((
+                i,
+                Segment {
+                    start_ms: i * 5_000,
+                    end_ms: i * 5_000 + 4_000,
+                    text: (*text).into(),
+                },
+            ))
+            .unwrap();
         }
 
         // Two consecutive hot-filler segments (real filler words, via the
         // actual count_fillers path) — sustained hysteresis should fire.
         let hot = "um uh like you know um uh yes it happened yesterday fine";
-        tx.send((6, Segment { start_ms: 30_000, end_ms: 34_000, text: hot.into() })).unwrap();
-        tx.send((7, Segment { start_ms: 35_000, end_ms: 39_000, text: hot.into() })).unwrap();
+        tx.send((
+            6,
+            Segment {
+                start_ms: 30_000,
+                end_ms: 34_000,
+                text: hot.into(),
+            },
+        ))
+        .unwrap();
+        tx.send((
+            7,
+            Segment {
+                start_ms: 35_000,
+                end_ms: 39_000,
+                text: hot.into(),
+            },
+        ))
+        .unwrap();
 
         drop(tx);
         join_with_watchdog(handle);
@@ -144,7 +176,9 @@ mod tests {
             "expected a persisted rhythm_filler event, got: {events:?}"
         );
 
-        let received = signal_rx.try_recv().expect("signal must also be published on signal_tx");
+        let received = signal_rx
+            .try_recv()
+            .expect("signal must also be published on signal_tx");
         assert_eq!(received.kind, SignalKind::RhythmFiller);
     }
 
@@ -167,8 +201,15 @@ mod tests {
         for (i, text) in texts.iter().enumerate() {
             expected_words += word_count(text) as i64;
             expected_fillers += count_fillers(text) as i64;
-            tx.send((i as i64, Segment { start_ms: i as i64 * 5_000, end_ms: i as i64 * 5_000 + 2_000, text: (*text).into() }))
-                .unwrap();
+            tx.send((
+                i as i64,
+                Segment {
+                    start_ms: i as i64 * 5_000,
+                    end_ms: i as i64 * 5_000 + 2_000,
+                    text: (*text).into(),
+                },
+            ))
+            .unwrap();
         }
         drop(tx);
         join_with_watchdog(handle);

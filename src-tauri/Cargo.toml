@@ -32,7 +32,23 @@ rubato = "0.16"
 reqwest = { version = "0.12", features = ["blocking"] }
 tar = "0.4"
 bzip2 = "0.5"
+encoding_rs = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
+
+# llama-cpp-2 is a real dependency as of Task 5: LlamaEngine
+# (src/insight/llama.rs) links it directly, not just the Task 1 spike
+# example. Exact-pinned per the Task 1 spike notes — this crate's API moves
+# with upstream llama.cpp, so an unpinned range risks silently breaking the
+# engine on a future `cargo update`.
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { version = "=0.1.152", features = ["metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+llama-cpp-2 = { version = "=0.1.152" }
+
+[[example]]
+name = "insight_spike"
+path = "examples/insight_spike.rs"
 

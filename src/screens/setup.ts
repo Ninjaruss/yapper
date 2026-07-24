@@ -58,14 +58,26 @@ export function renderSetup(
     modelProgressUnlisten = null;
   };
 
+  // Yapper downloads two models, one at a time (STT first, then the LLM) —
+  // see lib.rs's `ensure_models`. Both share this one progress bar; each
+  // `model:progress` event's `model` field says which download is currently
+  // active, so the banner text is recomputed per-event rather than fixed at
+  // banner-open time.
+  function textForModel(model: string): string {
+    return model === "llm"
+      ? "downloading the thinking model (~2 GB, one time) — you can record meanwhile; insight joins when it's ready"
+      : "downloading the listening model (~250 MB, one time) — you can record meanwhile; transcription joins when it's ready";
+  }
+
   async function initModelBanner(): Promise<void> {
-    let ready: boolean;
+    let ready: { stt: boolean; llm: boolean };
     try {
       ready = await ipc.modelsReady();
     } catch {
-      ready = false; // fail-safe: don't block the desk on a status-check error
+      // fail-safe: don't block the desk on a status-check error
+      ready = { stt: false, llm: false };
     }
-    if (ready) return;
+    if (ready.stt && ready.llm) return;
 
     bannerEl.innerHTML = `
       <style>
@@ -73,7 +85,7 @@ export function renderSetup(
       </style>
       <div class="paper-panel" style="margin-top:22px;">
         <div class="label">First run</div>
-        <p id="modelText" class="paused-note" style="margin-bottom:8px;">downloading the listening model (~250 MB, one time) — you can record meanwhile; transcription joins when it's ready</p>
+        <p id="modelText" class="paused-note" style="margin-bottom:8px;">${textForModel(ready.stt ? "llm" : "moonshine-base-en-int8")}</p>
         <div class="level-meter"><div id="modelBar"></div></div>
       </div>
     `;
@@ -81,6 +93,7 @@ export function renderSetup(
     const barEl = bannerEl.querySelector<HTMLElement>("#modelBar")!;
 
     ipc.onModelProgress((p) => {
+      textEl.textContent = textForModel(p.model);
       if (p.total === 0) {
         // No Content-Length from the server: indeterminate progress —
         // full-width bar, pulsing at reduced opacity.
@@ -105,7 +118,7 @@ export function renderSetup(
       ipc.ensureModels()
         .then(() => {
           stopModelProgressListener();
-          textEl.textContent = "listening model ready";
+          textEl.textContent = "models ready";
           barEl.style.animation = "none";
           barEl.style.opacity = "1";
           barEl.style.width = "100%";
@@ -119,7 +132,7 @@ export function renderSetup(
           // without this, a failed download could never be retried short
           // of an app restart.
           modelDownloadStarted = false;
-          textEl.textContent = `couldn't download the listening model — ${String(e)} — recording still works, transcription won't join until it's downloaded`;
+          textEl.textContent = `couldn't download a model — ${String(e)} — recording still works, transcription/insight won't join until it's downloaded`;
         });
     }
   }

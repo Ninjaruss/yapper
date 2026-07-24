@@ -2,8 +2,8 @@ import "./styles.css";
 import "./wisp.css";
 import { renderSetup } from "./screens/setup";
 import { renderLive } from "./screens/live";
-import { ipc } from "./ipc";
-import { fmtDuration } from "./format";
+import { renderRecap } from "./screens/recap";
+import { ipc, type Session } from "./ipc";
 
 const root = document.getElementById("app")!;
 
@@ -12,40 +12,20 @@ function showSetup() {
 }
 
 async function showLive() {
-  renderLive(root, async () => {
-    // Minimal end-of-take acknowledgment; real recap arrives in Plan 4.
-    const sessions = await ipc.listSessions();
-    const last = sessions[0];
-    const dur = last?.duration_ms != null ? fmtDuration(last.duration_ms) : "?";
-
-    // Build stats line if we have both filler and word counts
-    let statsLine = "";
-    if (last && last.filler_count != null && last.word_count != null) {
-      try {
-        const events = await ipc.listEvents(last.id);
-        const signalCount = events.length;
-        statsLine = `<p class="label">${last.word_count} words · ${last.filler_count} fillers · ${signalCount} signals</p>`;
-      } catch {
-        // Silently omit stats line on error
-      }
+  renderLive(root, async (endedSession: Session) => {
+    // end_session's Session never computes segment_count (it's always 0
+    // there — only list_sessions fills it in), so refresh from
+    // listSessions for an accurate Export-transcript gate. Fall back to
+    // the session end_session gave us if that refresh fails.
+    let session = endedSession;
+    try {
+      const sessions = await ipc.listSessions();
+      const fresh = sessions.find((s) => s.id === endedSession.id);
+      if (fresh) session = fresh;
+    } catch {
+      // stale segment_count is a minor cosmetic issue, not worth blocking recap over
     }
-
-    root.innerHTML = `
-      <div class="paper-panel">
-        <div class="label">Talk saved</div>
-        <p>${dur} · <code>${last?.audio_path ?? "?"}</code></p>
-        ${statsLine}
-        <div style="display:flex; gap:10px;">
-          ${last?.audio_path ? `<button id="reveal" class="quiet" style="color:var(--ink); border-color:var(--ink-soft);">Show file</button>` : ""}
-          <button id="again">Back to the desk</button>
-        </div>
-      </div>`;
-    if (last?.audio_path) {
-      root.querySelector<HTMLButtonElement>("#reveal")!.onclick = () => {
-        ipc.revealSession(last.id).catch(() => {});
-      };
-    }
-    root.querySelector<HTMLButtonElement>("#again")!.onclick = showSetup;
+    renderRecap(root, session, showSetup);
   });
 }
 

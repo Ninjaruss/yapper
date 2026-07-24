@@ -57,14 +57,21 @@ mod tests {
     fn transcribes_fixture_to_english() {
         let model_dir = dirs_next_model_dir();
         let mut engine = MoonshineEngine::new(&model_dir).unwrap();
-        let mut reader = hound::WavReader::open(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/superpowers/fixtures/first-session.wav"),
-        ).unwrap();
+        let mut reader = hound::WavReader::open(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../docs/superpowers/fixtures/first-session.wav"
+        ))
+        .unwrap();
         let rate = reader.spec().sample_rate;
-        let samples: Vec<f32> = reader.samples::<i16>().map(|s| s.unwrap() as f32 / 32767.0).collect();
+        let samples: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / 32767.0)
+            .collect();
         let mut rs = crate::stt::resample::Resampler::new(rate).unwrap();
         let sixteen = rs.process(&samples);
-        let text = engine.transcribe(&sixteen[..sixteen.len().min(16_000 * 30)]).unwrap();
+        let text = engine
+            .transcribe(&sixteen[..sixteen.len().min(16_000 * 30)])
+            .unwrap();
         assert!(text.split_whitespace().count() > 5, "got: {text}");
     }
 }

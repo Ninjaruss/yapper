@@ -22,7 +22,10 @@ impl Resampler {
                     .map_err(|e| YapperError::Audio(format!("resampler init: {e}")))?,
             )
         };
-        Ok(Self { inner, pending: Vec::new() })
+        Ok(Self {
+            inner,
+            pending: Vec::new(),
+        })
     }
 
     /// Feed a chunk at the input rate; returns whatever 16 kHz audio is ready.
@@ -77,8 +80,12 @@ mod tests {
     fn output_length_scales_with_rate_ratio() {
         let mut r = Resampler::new(48_000).unwrap();
         let out = r.process(&vec![0.0; 48_000]); // 1s @48k
-        // Allow small block-boundary slack; ~1s @16k expected.
-        assert!((out.len() as i64 - 16_000).abs() < 1_600, "got {}", out.len());
+                                                 // Allow small block-boundary slack; ~1s @16k expected.
+        assert!(
+            (out.len() as i64 - 16_000).abs() < 1_600,
+            "got {}",
+            out.len()
+        );
     }
 
     #[test]

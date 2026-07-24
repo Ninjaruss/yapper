@@ -43,12 +43,21 @@ mod tests {
     use crate::store::TranscriptSegment;
 
     fn seg(start: i64, end: i64, text: &str) -> TranscriptSegment {
-        TranscriptSegment { id: 0, session_id: 1, start_ms: start, end_ms: end, text: text.into() }
+        TranscriptSegment {
+            id: 0,
+            session_id: 1,
+            start_ms: start,
+            end_ms: end,
+            text: text.into(),
+        }
     }
 
     #[test]
     fn renders_srt_with_timestamps() {
-        let srt = to_srt(&[seg(0, 1500, "hello world"), seg(61_020, 62_000, "a minute in")]);
+        let srt = to_srt(&[
+            seg(0, 1500, "hello world"),
+            seg(61_020, 62_000, "a minute in"),
+        ]);
         assert!(srt.contains("1\n00:00:00,000 --> 00:00:01,500\nhello world"));
         assert!(srt.contains("2\n00:01:01,020 --> 00:01:02,000\na minute in"));
     }
