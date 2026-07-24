@@ -33,8 +33,8 @@ reqwest = { version = "0.12", features = ["blocking"] }
 tar = "0.4"
 bzip2 = "0.5"
 encoding_rs = "0.8"
-flacenc = "0.5.1"
 env_logger = "0.11"
+claxon = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
