@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { updateOutline, type OutlineEntryUI } from "./outline";
+import { sinkGhosts, updateOutline, type OutlineEntryUI } from "./outline";
 
 const e = (label: string, status: OutlineEntryUI["status"]): OutlineEntryUI => ({ label, status });
 
@@ -54,5 +54,22 @@ describe("updateOutline", () => {
   it("uses textContent only — labels are never parsed as markup", () => {
     updateOutline(container, [e("<img src=x onerror=alert(1)>", "current")]);
     expect(container.querySelector("img")).toBeNull();
+  });
+});
+
+describe("sinkGhosts", () => {
+  it("moves intent-untouched entries to the end, preserving both orders", () => {
+    const sorted = sinkGhosts([
+      e("a", "covered"),
+      e("ghost one", "intent_untouched"),
+      e("b", "current"),
+      e("ghost two", "intent_untouched"),
+    ]);
+    expect(sorted.map((x) => x.label)).toEqual(["a", "b", "ghost one", "ghost two"]);
+  });
+
+  it("is a no-op without ghosts", () => {
+    const entries = [e("a", "covered"), e("b", "current")];
+    expect(sinkGhosts(entries)).toEqual(entries);
   });
 });

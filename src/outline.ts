@@ -5,6 +5,18 @@ export interface OutlineEntryUI {
 
 const STATUS_CLASSES = ["outline-covered", "outline-current", "outline-intent"] as const;
 
+/**
+ * Stable-sorts not-yet-reached intent topics to the bottom: the paper reads
+ * as "story so far" on top and the "still ahead" queue below, instead of
+ * ghosts interleaving with covered ground wherever the model emitted them.
+ */
+export function sinkGhosts<T extends { status: string }>(entries: T[]): T[] {
+  return [
+    ...entries.filter((e) => e.status !== "intent_untouched"),
+    ...entries.filter((e) => e.status === "intent_untouched"),
+  ];
+}
+
 function statusClass(status: OutlineEntryUI["status"]): string {
   if (status === "covered") return "outline-covered";
   if (status === "current") return "outline-current";

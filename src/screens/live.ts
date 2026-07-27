@@ -1,8 +1,8 @@
 import { ipc, type OutlineEntryUI, type Session } from "../ipc";
-import { escapeHtml } from "../escape";
 import { createWisp } from "../wisp";
-import { updateOutline } from "../outline";
+import { sinkGhosts, updateOutline } from "../outline";
 import { eventMatchesCombo, isTypingTarget, loadKeybinds } from "../keys";
+import { makePauseMark, needsPauseMark, renderSegmentLine } from "../transcript";
 
 const MAX_TRANSCRIPT_LINES = 40;
 const VOICE_LEVEL_THRESHOLD = 0.02;
@@ -72,6 +72,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
   let paused = false;
   let ended = false;
   let lastVoiceAt = Date.now();
+  let anchoredLine: HTMLElement | null = null;
   const glowTimers = new Map<number, ReturnType<typeof setTimeout>>();
   let nullStatusCount = 0;
 
@@ -89,12 +90,17 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     }
   });
 
+  // Transcript lines render through transcript.ts: filler sounds as thinner
+  // ink, real silences as quiet `· · ·` dividers (speech-clock gap between
+  // consecutive segments).
+  let prevSegmentEndMs: number | null = null;
   let segmentUnlisten: (() => void) | null = null;
   ipc.onSegment((s) => {
-    transcriptEl.insertAdjacentHTML(
-      "beforeend",
-      `<p data-segment-id="${s.id}" style="margin:6px 0;">${escapeHtml(s.text)}</p>`,
-    );
+    if (needsPauseMark(prevSegmentEndMs, s.start_ms)) {
+      transcriptEl.appendChild(makePauseMark());
+    }
+    prevSegmentEndMs = s.end_ms;
+    transcriptEl.appendChild(renderSegmentLine(s));
     while (transcriptEl.children.length > MAX_TRANSCRIPT_LINES) {
       transcriptEl.removeChild(transcriptEl.firstElementChild!);
     }
@@ -151,11 +157,27 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
   // outline. Empty until the insight engine finds a current topic.
   const chapterEl = root.querySelector<HTMLElement>("#chapter")!;
 
+  // Time-in-topic: a quiet "N min" beside the current line once you've
+  // been on one topic a while — pacing awareness, not a timer. Tracked on
+  // the speech clock (status.elapsed_ms), reset when the topic changes.
+  const TOPIC_TIME_AFTER_MS = 180_000;
+  let latestElapsedMs = 0;
+  let currentTopicLabel: string | null = null;
+  let currentTopicSinceMs = 0;
+  let topicTimeSpan: HTMLElement | null = null;
+
   let outlineUnlisten: (() => void) | null = null;
   ipc.onOutline((entries) => {
     latestOutline = entries;
-    currentOutlineP = updateOutline(outlineEl, entries);
-    chapterEl.textContent = entries.find((e) => e.status === "current")?.label ?? "";
+    currentOutlineP = updateOutline(outlineEl, sinkGhosts(entries));
+    const current = entries.find((e) => e.status === "current")?.label ?? "";
+    chapterEl.textContent = current;
+    if (current !== currentTopicLabel) {
+      currentTopicLabel = current || null;
+      currentTopicSinceMs = latestElapsedMs;
+      topicTimeSpan?.remove();
+      topicTimeSpan = null;
+    }
   }).then((fn) => {
     if (ended) {
       fn();
@@ -282,8 +304,25 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     }
     // Reset counter on any non-null status
     nullStatusCount = 0;
+    latestElapsedMs = status.elapsed_ms;
     const total = Math.floor(status.elapsed_ms / 1000);
     elapsedEl.textContent = `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+
+    // Quiet time-in-topic marker on the current outline line.
+    if (
+      currentTopicLabel &&
+      currentOutlineP &&
+      latestElapsedMs - currentTopicSinceMs >= TOPIC_TIME_AFTER_MS
+    ) {
+      if (topicTimeSpan === null || topicTimeSpan.parentElement !== currentOutlineP) {
+        topicTimeSpan?.remove();
+        topicTimeSpan = document.createElement("span");
+        topicTimeSpan.className = "topic-time";
+        currentOutlineP.appendChild(topicTimeSpan);
+      }
+      const mins = Math.floor((latestElapsedMs - currentTopicSinceMs) / 60_000);
+      topicTimeSpan.textContent = `${mins} min`;
+    }
     if (status.writer_failed) {
       stateEl.textContent = "trouble writing audio to disk — end the talk to keep what's saved";
     }
@@ -315,8 +354,21 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
       const idle = Date.now() - lastVoiceAt;
       if (idle < FLOWING_WITHIN_MS) {
         wisp.setState("flowing");
+        // Speaking again: the lost-thread anchor lets go.
+        anchoredLine?.classList.remove("thread-anchor");
+        anchoredLine = null;
       } else if (idle >= THINKING_AFTER_MS) {
         wisp.setState("thinking");
+        // Lost-thread anchor: while you're thinking, the last thing you
+        // said gently emphasizes — the mirror answers "where was I?"
+        // exactly when you're asking it.
+        const lines = transcriptEl.querySelectorAll<HTMLElement>("p[data-segment-id]");
+        const last = lines[lines.length - 1];
+        if (last && last !== anchoredLine) {
+          anchoredLine?.classList.remove("thread-anchor");
+          anchoredLine = last;
+          last.classList.add("thread-anchor");
+        }
       }
       // Between the two thresholds: leave the current state as-is.
     }

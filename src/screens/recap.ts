@@ -2,6 +2,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { ipc, type Session, type OutlineRow, type YapperEvent, type TranscriptSegment } from "../ipc";
 import { fmtDate, fmtDuration } from "../format";
 import { coverageNote, fillersPerMinute, usualFillersPerMinute } from "../stats";
+import { sinkGhosts } from "../outline";
 
 // Human labels for event kinds shown in the "Moments" timeline. Unknown
 // kinds fall back to the raw kind string rather than disappearing.
@@ -282,7 +283,7 @@ export function renderRecap(
         outlineEl.appendChild(p);
         return;
       }
-      for (const row of rows) {
+      for (const row of sinkGhosts(rows)) {
         const p = document.createElement("p");
         if (row.status === "covered") {
           p.className = "outline-covered";

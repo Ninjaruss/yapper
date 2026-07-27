@@ -195,6 +195,40 @@ select, textarea {
   margin: 5px 0;
 }
 
+/* Fillers as thinner ink — seen, never counted or judged. */
+#transcript .filler { opacity: 0.5; }
+
+/* A real silence renders as ordinary quiet punctuation: pauses are fine. */
+#transcript .pause-mark {
+  color: var(--ink-soft);
+  opacity: 0.55;
+  letter-spacing: 0.3em;
+  margin: 2px 0;
+  user-select: none;
+}
+
+/* Lost-thread anchor: while the speaker is thinking, the last spoken line
+   gently comes forward — same bar language as the outline's current topic.
+   The transition makes it arrive as a breath, not a blink. */
+.transcript-panel #transcript p.thread-anchor {
+  color: var(--ink);
+  border-left: 3px solid var(--gold);
+  padding-left: 8px;
+  margin-left: -11px;
+  transition: color 0.9s ease, border-color 0.9s ease;
+}
+
+/* Quiet time-in-topic marker beside the current outline line. */
+.topic-time {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: normal;
+  color: var(--ink-soft);
+  letter-spacing: 0.05em;
+  margin-left: 10px;
+  vertical-align: 1px;
+}
+
 /* WONDERING: a parchment chip with a gold spine. Type matches the outline
    (it comments on the outline — it must not whisper under it). On arrival
    the text fades in and the spine glows briefly, then settles (~4s) —
