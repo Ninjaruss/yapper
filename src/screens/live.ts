@@ -3,6 +3,7 @@ import { createWisp } from "../wisp";
 import { sinkGhosts, updateOutline } from "../outline";
 import { eventMatchesCombo, isTypingTarget, loadKeybinds } from "../keys";
 import { makePauseMark, needsPauseMark, renderSegmentLine } from "../transcript";
+import { loadPresence, shouldShowQuestion, shouldShowRhythm } from "../presence";
 
 const MAX_TRANSCRIPT_LINES = 40;
 const VOICE_LEVEL_THRESHOLD = 0.02;
@@ -113,8 +114,16 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     }
   });
 
+  // Presence gates: which live cues get DISPLAYED (Rust records them all
+  // regardless, so the recap is identical at any level).
+  const presence = loadPresence();
+  let lastRhythmShownAt: number | null = null;
+  let lastQuestionShownAt: number | null = null;
+
   let signalUnlisten: (() => void) | null = null;
   ipc.onSignal((sig) => {
+    if (!shouldShowRhythm(presence, lastRhythmShownAt, Date.now())) return;
+    lastRhythmShownAt = Date.now();
     wisp.marginNote(sig.note);
     if (sig.kind === "repetition") {
       wisp.setState("repeat");
@@ -188,6 +197,8 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
 
   let questionUnlisten: (() => void) | null = null;
   ipc.onQuestion((question) => {
+    if (!shouldShowQuestion(presence, lastQuestionShownAt, Date.now())) return;
+    lastQuestionShownAt = Date.now();
     wonderingLabelEl.textContent = "Wondering";
     wonderingLabelEl.style.display = "";
     wonderingEl.classList.remove("chip-callback", "chip-arriving");

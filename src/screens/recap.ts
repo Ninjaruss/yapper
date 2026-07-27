@@ -1,7 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { ipc, type Session, type OutlineRow, type YapperEvent, type TranscriptSegment } from "../ipc";
 import { fmtDate, fmtDuration } from "../format";
-import { coverageNote, fillersPerMinute, usualFillersPerMinute } from "../stats";
+import { coverageNote, fillersPerMinute, longPauseCount, usualFillersPerMinute, usualWordsPerMinute, wordsPerMinute } from "../stats";
 import { sinkGhosts } from "../outline";
 
 // Human labels for event kinds shown in the "Moments" timeline. Unknown
@@ -39,6 +39,7 @@ export function renderRecap(
         <span id="recapDate"></span> · <span id="recapDuration"></span>
       </p>
       <p id="recapIntent" style="font-style:italic; margin:0;"></p>
+      <p id="recapFocus" class="focus-line" style="display:none;"></p>
     </div>
     <div class="paper-panel" id="recapListenPanel" style="margin-top:16px; display:none;">
       <div class="label">Listen back</div>
@@ -62,6 +63,10 @@ export function renderRecap(
       <div class="label">Moments</div>
       <div id="recapSignals"></div>
     </div>
+    <div class="paper-panel" id="recapRetroPanel" style="margin-top:16px; display:none;">
+      <div class="label">Looking back</div>
+      <div id="recapRetro"></div>
+    </div>
     <p id="recapStats" class="label on-desk" style="margin-top:10px;"></p>
     <p id="recapError" class="paused-note" role="alert"></p>
     <div style="display:flex; gap:10px; margin-top:8px;">
@@ -84,6 +89,11 @@ export function renderRecap(
     session.duration_ms ?? 0,
   );
   root.querySelector<HTMLElement>("#recapIntent")!.textContent = intentFirstLine;
+  if (session.focus) {
+    const focusEl = root.querySelector<HTMLElement>("#recapFocus")!;
+    focusEl.textContent = `this take's experiment — ${session.focus}`;
+    focusEl.style.display = "";
+  }
 
   if (session.segment_count > 0) {
     const exportBtn = root.querySelector<HTMLButtonElement>("#recapExport")!;
@@ -219,6 +229,101 @@ export function renderRecap(
     audioEl.onerror = retryFreshPath;
   }
 
+  // Looking back: the story-shape retrospective — three quiet observations
+  // (stakes / opening / landing, per the Moth rubric) + one experiment for
+  // the next take. Generated once per session by the local LLM; cached
+  // rows return instantly, otherwise the panel shows a reading state while
+  // the model runs. Any failure (model missing, engine trouble) simply
+  // leaves the panel hidden — the recap never depends on it.
+  const retroPanel = root.querySelector<HTMLElement>("#recapRetroPanel")!;
+  const retroEl = root.querySelector<HTMLElement>("#recapRetro")!;
+  function renderRetro(retro: {
+    stakes: string | null;
+    opening: string | null;
+    landing: string | null;
+    try_next: string;
+  }): void {
+    retroEl.innerHTML = "";
+    const rows: [string, string | null][] = [
+      ["stakes", retro.stakes],
+      ["the opening", retro.opening],
+      ["the landing", retro.landing],
+    ];
+    for (const [label, text] of rows) {
+      if (!text) continue;
+      const p = document.createElement("p");
+      p.className = "retro-line";
+      const tag = document.createElement("span");
+      tag.className = "label retro-tag";
+      tag.textContent = label;
+      const body = document.createElement("span");
+      body.textContent = text;
+      p.append(tag, body);
+      retroEl.appendChild(p);
+    }
+    const next = document.createElement("p");
+    next.className = "retro-next";
+    const tag = document.createElement("span");
+    tag.className = "label retro-tag";
+    tag.textContent = "next take, maybe";
+    const body = document.createElement("span");
+    body.textContent = retro.try_next;
+    next.append(tag, body);
+    retroEl.appendChild(next);
+  }
+  if (session.segment_count > 0 && session.duration_ms != null) {
+    ipc
+      .getRetro(session.id)
+      .then((cached) => {
+        if (cached) {
+          retroPanel.style.display = "";
+          renderRetro(cached);
+          return;
+        }
+        retroPanel.style.display = "";
+        retroEl.innerHTML = "";
+        const waiting = document.createElement("p");
+        waiting.className = "outline-note";
+        waiting.textContent = "reading it back…";
+        retroEl.appendChild(waiting);
+        return ipc.generateRetro(session.id).then((retro) => renderRetro(retro));
+      })
+      .catch(() => {
+        retroPanel.style.display = "none";
+      });
+  }
+
+  // Stats line: three equal, neutrally-ordered metrics (pace · pauses ·
+  // fillers), each vs the speaker's own median where history exists.
+  // Pieces arrive from different fetches; renderStats() composes whatever
+  // is known so far.
+  const statsState: {
+    signals: number | null;
+    pauses: number | null;
+    usualFpm: number | null;
+    usualWpm: number | null;
+  } = { signals: null, pauses: null, usualFpm: null, usualWpm: null };
+  function renderStats(): void {
+    const bits: string[] = [];
+    if (session.word_count != null) bits.push(`${session.word_count.toLocaleString()} words`);
+    const wpm = wordsPerMinute(session);
+    if (wpm != null) {
+      const usual = statsState.usualWpm;
+      bits.push(usual != null ? `${Math.round(wpm)} wpm (usual ~${Math.round(usual)})` : `${Math.round(wpm)} wpm`);
+    }
+    if (statsState.pauses != null) {
+      bits.push(`${statsState.pauses} long pause${statsState.pauses === 1 ? "" : "s"}`);
+    }
+    const fpm = fillersPerMinute(session);
+    if (session.filler_count != null) {
+      const rate = fpm != null ? ` (${fpm.toFixed(1)}/min${statsState.usualFpm != null ? ` — your usual ~${statsState.usualFpm.toFixed(1)}` : ""})` : "";
+      bits.push(`${session.filler_count} fillers${rate}`);
+    }
+    if (statsState.signals != null) bits.push(`${statsState.signals} signals`);
+    statsEl.textContent = bits.join(" · ");
+  }
+  renderStats();
+
   // Transcript panel: every stored segment, timestamped; clicking a line
   // seeks the player (segment timestamps and the recording share the same
   // speech clock — paused time exists in neither).
@@ -229,6 +334,8 @@ export function renderRecap(
       .listSegments(session.id)
       .then((segments: TranscriptSegment[]) => {
         if (segments.length === 0) return;
+        statsState.pauses = longPauseCount(segments);
+        renderStats();
         transcriptPanel.style.display = "";
         if (session.audio_exists) {
           root.querySelector<HTMLElement>("#recapTranscriptHint")!.textContent =
@@ -334,34 +441,20 @@ export function renderRecap(
         }
       }
 
-      if (session.word_count != null && session.filler_count != null) {
-        const fpm = fillersPerMinute(session);
-        const fillerBit =
-          fpm != null
-            ? `${session.filler_count} fillers (${fpm.toFixed(1)}/min)`
-            : `${session.filler_count} fillers`;
-        statsEl.textContent =
-          `${session.word_count.toLocaleString()} words · ${fillerBit} · ` +
-          `${events.length} signals`;
-        // "your usual" anchors the number against the speaker's own
-        // history (no-shame: their baseline, never a universal rule).
-        if (fpm != null) {
-          ipc
-            .listSessions()
-            .then((all) => {
-              const usual = usualFillersPerMinute(all, session.id);
-              if (usual != null) {
-                statsEl.textContent =
-                  `${session.word_count!.toLocaleString()} words · ` +
-                  `${session.filler_count} fillers (${fpm.toFixed(1)}/min — your usual ~${usual.toFixed(1)}) · ` +
-                  `${events.length} signals`;
-              }
-            })
-            .catch(() => {
-              /* the plain stats line above already stands */
-            });
-        }
-      }
+      statsState.signals = events.length;
+      renderStats();
+      // "your usual" anchors arrive from history (no-shame: the speaker's
+      // own baseline, never a universal rule).
+      ipc
+        .listSessions()
+        .then((all) => {
+          statsState.usualFpm = usualFillersPerMinute(all, session.id);
+          statsState.usualWpm = usualWordsPerMinute(all, session.id);
+          renderStats();
+        })
+        .catch(() => {
+          /* the plain stats line already stands */
+        });
     })
     .catch((e) => {
       signalsEl.innerHTML = "";

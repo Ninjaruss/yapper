@@ -298,6 +298,29 @@ kbd {
 }
 button.key-change, button.key-reset { padding: 4px 10px; font-size: 0.8rem; }
 button.key-reset { margin-top: 8px; }
+
+/* Focus thread: last retro's experiment, riding along quietly. */
+.focus-line {
+  font-style: italic;
+  color: var(--gold-ink);
+  font-size: 0.92rem;
+  margin: 8px 0 0;
+}
+
+/* Looking back (story-shape retro): tagged noticings + one experiment. */
+.retro-line, .retro-next { margin: 8px 0; display: flex; gap: 10px; align-items: baseline; }
+.retro-tag { flex: 0 0 auto; min-width: 108px; }
+.retro-next { border-left: 3px solid var(--gold); padding-left: 10px; margin-left: -13px; }
+.retro-next > span:last-child { font-style: italic; color: var(--gold-ink); }
+
+/* Companion-presence control: three quiet options, chosen one gold. */
+.presence-row { display: flex; gap: 8px; }
+button.presence-opt { padding: 5px 14px; font-size: 0.85rem; }
+button.presence-opt.selected {
+  background: var(--gold);
+  color: var(--ink);
+  border-color: transparent;
+}
 .key-hint {
   margin: 6px 0 0;
   text-transform: none;

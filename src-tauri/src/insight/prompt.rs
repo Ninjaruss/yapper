@@ -99,6 +99,125 @@ Return only the JSON object, nothing else."
     )
 }
 
+/// Character budget for the retro transcript. ~24k chars ≈ 6-7k tokens,
+/// leaving room for instructions + output inside the 8192-token context.
+const RETRO_TRANSCRIPT_MAX_CHARS: usize = 24_000;
+
+/// Keeps the head and a larger tail of an over-budget transcript (the
+/// opening and the landing carry the story-shape signal), with an explicit
+/// omission marker between. Under-budget transcripts pass through whole.
+pub fn condense_transcript(lines: &[(i64, String)], max_chars: usize) -> String {
+    let full = lines
+        .iter()
+        .map(|(ms, text)| format!("[{}] {text}", format_mmss(*ms)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if full.len() <= max_chars {
+        return full;
+    }
+    let head_budget = max_chars * 3 / 10;
+    let tail_budget = max_chars * 6 / 10;
+    let rendered: Vec<String> = lines
+        .iter()
+        .map(|(ms, text)| format!("[{}] {text}", format_mmss(*ms)))
+        .collect();
+    let mut head: Vec<&str> = Vec::new();
+    let mut used = 0;
+    for line in &rendered {
+        if used + line.len() > head_budget {
+            break;
+        }
+        used += line.len() + 1;
+        head.push(line);
+    }
+    let mut tail: Vec<&str> = Vec::new();
+    used = 0;
+    for line in rendered.iter().rev() {
+        if used + line.len() > tail_budget {
+            break;
+        }
+        used += line.len() + 1;
+        tail.push(line);
+    }
+    tail.reverse();
+    format!(
+        "{}\n[… middle omitted …]\n{}",
+        head.join("\n"),
+        tail.join("\n")
+    )
+}
+
+/// The post-session story-shape pass: three quiet observations + one
+/// experiment, per The Moth's craft rubric (stakes / opening / landing).
+/// Deterministic like `build_prompt`.
+pub fn build_retro_prompt(intent: &str, lines: &[(i64, String)]) -> String {
+    let transcript = condense_transcript(lines, RETRO_TRANSCRIPT_MAX_CHARS);
+    format!(
+        "You are a silent listener who just heard someone talk through this, \
+unscripted. You take quiet notes on the SHAPE of what they told — never \
+grading, never coaching. Reply with STRICT JSON only, no prose, no code \
+fences, matching exactly this schema:\n\
+{{\"stakes\":\"...\"|null,\"opening\":\"...\"|null,\"landing\":\"...\"|null,\"try_next\":\"...\"}}\n\
+\n\
+INTENT (what they set out to explore):\n\
+{intent}\n\
+\n\
+TRANSCRIPT (timestamped):\n\
+{transcript}\n\
+\n\
+FIELD NOTES:\n\
+- stakes: what the speaker stood to gain or lose, IF the talk made it \
+felt — name where it surfaced, in their own words (e.g. \"the stakes \
+surface at 4:12 — what the quiet cost you\"). null if stakes never \
+quite surface.\n\
+- opening: one neutral noticing about how it began — did it drop into a \
+scene or moment, or clear its throat first? null if nothing worth noting.\n\
+- landing: one neutral noticing about how it ended — did it land on \
+something, or trail off? null if nothing worth noting.\n\
+- try_next: exactly ONE small experiment for the next take, grounded in \
+THIS talk, in a curious-listener voice (e.g. \"maybe open inside the \
+moment the box hit the floor — the preamble before it could go\"). \
+Never a rule, never criticism, never more than one sentence.\n\
+\n\
+Return only the JSON object, nothing else."
+    )
+}
+
+/// Leniently parses raw model output into a retro. Same pipeline as
+/// `parse_update`; a missing/empty `try_next` drops the whole retro (the
+/// experiment is the point), while any other missing field is just null.
+pub fn parse_retro(raw: &str) -> Option<RetroFields> {
+    let trimmed = raw.trim();
+    let unfenced = strip_fences(trimmed);
+    let value = find_first_valid_json_object(unfenced)?;
+    let obj = value.as_object()?;
+
+    let field = |key: &str| -> Option<String> {
+        obj.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+
+    let try_next = field("try_next")?;
+    Some(RetroFields {
+        stakes: field("stakes"),
+        opening: field("opening"),
+        landing: field("landing"),
+        try_next,
+    })
+}
+
+/// Parsed retro fields — the store's `RetroRow` minus identity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetroFields {
+    pub stakes: Option<String>,
+    pub opening: Option<String>,
+    pub landing: Option<String>,
+    pub try_next: String,
+}
+
 fn format_outline(outline: &[OutlineEntry]) -> String {
     if outline.is_empty() {
         return "(none yet)".to_string();
@@ -413,6 +532,71 @@ mod tests {
         assert!(prompt.contains("exactly ONE entry is \"current\""));
         assert!(prompt.contains("becomes \"covered\""));
         assert!(prompt.contains("Offer one when a recent moment invites"));
+    }
+
+    // ---- retro: build/condense/parse ----
+
+    #[test]
+    fn build_retro_prompt_contains_rubric_and_transcript() {
+        let lines = vec![
+            (4_000, "Okay so. First week done.".to_string()),
+            (65_000, "the quiet after everyone left".to_string()),
+        ];
+        let prompt = build_retro_prompt("first week alone", &lines);
+
+        assert!(prompt.contains("first week alone"));
+        assert!(prompt.contains("[0:04] Okay so. First week done."));
+        assert!(prompt.contains("[1:05] the quiet after everyone left"));
+        assert!(prompt.contains("\"stakes\""));
+        assert!(prompt.contains("\"try_next\""));
+        assert!(prompt.contains("never coaching"));
+        assert!(prompt.contains("Never a rule, never criticism"));
+        // Deterministic.
+        assert_eq!(prompt, build_retro_prompt("first week alone", &lines));
+    }
+
+    #[test]
+    fn condense_transcript_under_budget_is_whole() {
+        let lines = vec![(1_000, "short".to_string()), (2_000, "talk".to_string())];
+        let s = condense_transcript(&lines, 1_000);
+        assert!(s.contains("[0:01] short"));
+        assert!(!s.contains("omitted"));
+    }
+
+    #[test]
+    fn condense_transcript_over_budget_keeps_head_and_tail() {
+        let lines: Vec<(i64, String)> = (0..200)
+            .map(|i| (i * 1_000, format!("line number {i} with some padding words")))
+            .collect();
+        let s = condense_transcript(&lines, 2_000);
+        assert!(s.len() <= 2_100, "stays near budget: {}", s.len());
+        assert!(s.contains("line number 0 "), "keeps the opening");
+        assert!(s.contains("line number 199 "), "keeps the landing");
+        assert!(s.contains("[… middle omitted …]"));
+        assert!(!s.contains("line number 100 "), "middle goes");
+    }
+
+    #[test]
+    fn parse_retro_clean_and_nulls() {
+        let raw = r#"{"stakes":"surfaces at 4:12","opening":null,"landing":"lands on the quiet","try_next":"open inside the moment"}"#;
+        let retro = parse_retro(raw).expect("should parse");
+        assert_eq!(retro.stakes.as_deref(), Some("surfaces at 4:12"));
+        assert!(retro.opening.is_none());
+        assert_eq!(retro.try_next, "open inside the moment");
+    }
+
+    #[test]
+    fn parse_retro_requires_try_next() {
+        assert!(parse_retro(r#"{"stakes":"x","opening":"y","landing":"z"}"#).is_none());
+        assert!(parse_retro(r#"{"stakes":"x","try_next":"  "}"#).is_none());
+        assert!(parse_retro("garbage, no json here").is_none());
+    }
+
+    #[test]
+    fn parse_retro_tolerates_fences_and_chatter() {
+        let raw = "Sure!\n```json\n{\"stakes\":null,\"opening\":null,\"landing\":null,\"try_next\":\"name the stakes early\"}\n```";
+        let retro = parse_retro(raw).expect("fenced retro should parse");
+        assert_eq!(retro.try_next, "name the stakes early");
     }
 
     // ---- parse_update ----

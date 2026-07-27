@@ -18,6 +18,8 @@ pub struct Session {
     pub paused_ms: i64,
     pub filler_count: Option<i64>,
     pub word_count: Option<i64>,
+    /// The experiment this take carried in (previous retro's try_next).
+    pub focus: Option<String>,
     /// Not persisted — computed at the command layer from the filesystem so
     /// the UI can tell when a recording was deleted out from under us.
     #[serde(default)]
@@ -52,6 +54,15 @@ pub struct Baseline {
     pub fillers_per_min: f64,
     pub words_per_min: f64,
     pub sessions_counted: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RetroRow {
+    pub session_id: i64,
+    pub stakes: Option<String>,
+    pub opening: Option<String>,
+    pub landing: Option<String>,
+    pub try_next: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -160,17 +171,52 @@ impl SessionStore {
                 PRAGMA user_version = 4;",
             )?;
         }
+        if version < 5 {
+            // Story-shape retrospectives: one per session, written only on a
+            // successful LLM pass so a missing row means "not generated yet".
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS retros (
+                    session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                    stakes TEXT,
+                    opening TEXT,
+                    landing TEXT,
+                    try_next TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL
+                );
+                PRAGMA user_version = 5;",
+            )?;
+        }
+        if version < 6 {
+            // The focus carried into a take (the previous retro's try_next
+            // at start time) — lets the recap echo THIS take's experiment
+            // even after newer retros exist.
+            conn.execute_batch(
+                "ALTER TABLE sessions ADD COLUMN focus TEXT;
+                PRAGMA user_version = 6;",
+            )?;
+        }
         Ok(())
     }
 
     pub fn create_session(&self, started_at_ms: i64, intent: &str) -> Result<i64, YapperError> {
+        self.create_session_with_focus(started_at_ms, intent, None)
+    }
+
+    /// `focus` is the previous retro's `try_next` captured at start time, so
+    /// the recap can echo the experiment this take was actually carrying.
+    pub fn create_session_with_focus(
+        &self,
+        started_at_ms: i64,
+        intent: &str,
+        focus: Option<&str>,
+    ) -> Result<i64, YapperError> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| YapperError::State("database lock poisoned".into()))?;
         conn.execute(
-            "INSERT INTO sessions (started_at_ms, intent) VALUES (?1, ?2)",
-            params![started_at_ms, intent],
+            "INSERT INTO sessions (started_at_ms, intent, focus) VALUES (?1, ?2, ?3)",
+            params![started_at_ms, intent, focus],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -264,7 +310,7 @@ impl SessionStore {
             .lock()
             .map_err(|_| YapperError::State("database lock poisoned".into()))?;
         Ok(conn.query_row(
-            "SELECT id, started_at_ms, ended_at_ms, intent, audio_path, duration_ms, paused_ms, filler_count, word_count
+            "SELECT id, started_at_ms, ended_at_ms, intent, audio_path, duration_ms, paused_ms, filler_count, word_count, focus
              FROM sessions WHERE id = ?1",
             params![id],
             Self::row_to_session,
@@ -277,11 +323,73 @@ impl SessionStore {
             .lock()
             .map_err(|_| YapperError::State("database lock poisoned".into()))?;
         let mut stmt = conn.prepare(
-            "SELECT id, started_at_ms, ended_at_ms, intent, audio_path, duration_ms, paused_ms, filler_count, word_count
+            "SELECT id, started_at_ms, ended_at_ms, intent, audio_path, duration_ms, paused_ms, filler_count, word_count, focus
              FROM sessions ORDER BY started_at_ms DESC",
         )?;
         let rows = stmt.query_map([], Self::row_to_session)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Upserts a session's story-shape retrospective (regeneration replaces).
+    pub fn save_retro(&self, retro: &RetroRow, created_at_ms: i64) -> Result<(), YapperError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| YapperError::State("database lock poisoned".into()))?;
+        conn.execute(
+            "INSERT INTO retros (session_id, stakes, opening, landing, try_next, created_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(session_id) DO UPDATE SET
+                stakes = excluded.stakes, opening = excluded.opening,
+                landing = excluded.landing, try_next = excluded.try_next,
+                created_at_ms = excluded.created_at_ms",
+            params![
+                retro.session_id,
+                retro.stakes,
+                retro.opening,
+                retro.landing,
+                retro.try_next,
+                created_at_ms
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_retro(&self, session_id: i64) -> Result<Option<RetroRow>, YapperError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| YapperError::State("database lock poisoned".into()))?;
+        let mut stmt = conn.prepare(
+            "SELECT session_id, stakes, opening, landing, try_next FROM retros
+             WHERE session_id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![session_id], Self::row_to_retro)?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// The most recent retro's `try_next` — the focus carried into the next
+    /// take's setup screen.
+    pub fn latest_try_next(&self) -> Result<Option<String>, YapperError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| YapperError::State("database lock poisoned".into()))?;
+        let mut stmt = conn.prepare(
+            "SELECT try_next FROM retros ORDER BY created_at_ms DESC, session_id DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.next().transpose()?)
+    }
+
+    fn row_to_retro(row: &rusqlite::Row) -> rusqlite::Result<RetroRow> {
+        Ok(RetroRow {
+            session_id: row.get(0)?,
+            stakes: row.get(1)?,
+            opening: row.get(2)?,
+            landing: row.get(3)?,
+            try_next: row.get(4)?,
+        })
     }
 
     pub fn add_event(
@@ -516,6 +624,7 @@ impl SessionStore {
             paused_ms: row.get(6)?,
             filler_count: row.get(7)?,
             word_count: row.get(8)?,
+            focus: row.get(9)?,
             audio_exists: false, // filesystem check happens at the command layer
             segment_count: 0,    // filled in by the command layer via count_segments
         })
@@ -840,5 +949,67 @@ mod tests {
             2,
             "should now count both pace wrongs"
         );
+    }
+
+    #[test]
+    fn retro_round_trip_upsert_and_latest() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let s1 = store.create_session(0, "first").unwrap();
+        let s2 = store.create_session(1, "second").unwrap();
+
+        assert!(store.get_retro(s1).unwrap().is_none());
+        assert!(store.latest_try_next().unwrap().is_none());
+
+        store
+            .save_retro(
+                &RetroRow {
+                    session_id: s1,
+                    stakes: Some("what the move cost".into()),
+                    opening: None,
+                    landing: Some("landed on the quiet".into()),
+                    try_next: "open inside the moment".into(),
+                },
+                1_000,
+            )
+            .unwrap();
+        store
+            .save_retro(
+                &RetroRow {
+                    session_id: s2,
+                    stakes: None,
+                    opening: Some("preamble first".into()),
+                    landing: None,
+                    try_next: "name the stakes early".into(),
+                },
+                2_000,
+            )
+            .unwrap();
+
+        let r1 = store.get_retro(s1).unwrap().expect("retro saved");
+        assert_eq!(r1.stakes.as_deref(), Some("what the move cost"));
+        assert!(r1.opening.is_none());
+        assert_eq!(r1.try_next, "open inside the moment");
+
+        // Latest = most recently created retro.
+        assert_eq!(
+            store.latest_try_next().unwrap().as_deref(),
+            Some("name the stakes early")
+        );
+
+        // Upsert replaces in place.
+        store
+            .save_retro(
+                &RetroRow {
+                    session_id: s1,
+                    stakes: None,
+                    opening: None,
+                    landing: None,
+                    try_next: "revised".into(),
+                },
+                3_000,
+            )
+            .unwrap();
+        assert_eq!(store.get_retro(s1).unwrap().unwrap().try_next, "revised");
+        assert_eq!(store.latest_try_next().unwrap().as_deref(), Some("revised"));
     }
 }

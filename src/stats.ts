@@ -20,12 +20,13 @@ export function fillersPerMinute(s: SessionCounts): number | null {
   return s.filler_count / (speakingMs / 60_000);
 }
 
-/** Median fillers/min across the speaker's OTHER informative talks — the
- * "your usual" anchor on the recap. Null with fewer than two data points
+/** Median of `metric` across the speaker's OTHER informative talks — the
+ * "your usual" anchors on the recap. Null with fewer than two data points
  * (a single prior talk is an anecdote, not a usual). */
-export function usualFillersPerMinute(
-  sessions: SessionCounts[],
+function usualOf<T extends SessionCounts>(
+  sessions: T[],
   excludeId: number,
+  metric: (s: T) => number | null,
 ): number | null {
   const values = sessions
     .filter(
@@ -34,12 +35,53 @@ export function usualFillersPerMinute(
         s.duration_ms != null &&
         s.duration_ms - s.paused_ms >= MIN_INFORMATIVE_MS,
     )
-    .map(fillersPerMinute)
+    .map(metric)
     .filter((v): v is number => v != null && Number.isFinite(v))
     .sort((a, b) => a - b);
   if (values.length < 2) return null;
   const mid = Math.floor(values.length / 2);
   return values.length % 2 === 1 ? values[mid]! : (values[mid - 1]! + values[mid]!) / 2;
+}
+
+export function usualFillersPerMinute(
+  sessions: SessionCounts[],
+  excludeId: number,
+): number | null {
+  return usualOf(sessions, excludeId, fillersPerMinute);
+}
+
+export interface SessionWords extends SessionCounts {
+  word_count: number | null;
+}
+
+export function wordsPerMinute(s: SessionWords): number | null {
+  if (s.duration_ms == null || s.word_count == null) return null;
+  const speakingMs = s.duration_ms - s.paused_ms;
+  if (speakingMs <= 0) return null;
+  return s.word_count / (speakingMs / 60_000);
+}
+
+export function usualWordsPerMinute(
+  sessions: SessionWords[],
+  excludeId: number,
+): number | null {
+  return usualOf(sessions, excludeId, wordsPerMinute);
+}
+
+/** Threshold matches transcript.ts's PAUSE_MARK_MS so the recap's number
+ * agrees with the `· · ·` marks the paper actually shows. */
+const LONG_PAUSE_MS = 4000;
+
+/** Count of long silences between consecutive transcript segments. */
+export function longPauseCount(
+  segments: { start_ms: number; end_ms: number }[],
+  thresholdMs = LONG_PAUSE_MS,
+): number {
+  let count = 0;
+  for (let i = 1; i < segments.length; i++) {
+    if (segments[i]!.start_ms - segments[i - 1]!.end_ms >= thresholdMs) count++;
+  }
+  return count;
 }
 
 /** Quiet note for intent topics that never got airtime, or null when the

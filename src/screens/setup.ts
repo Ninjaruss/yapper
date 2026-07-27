@@ -2,6 +2,7 @@ import { ipc, type InputDevice, type Session } from "../ipc";
 import { escapeHtml } from "../escape";
 import { fmtDate, fmtDuration } from "../format";
 import { createWisp } from "../wisp";
+import { PRESENCE_HINTS, loadPresence, savePresence, type Presence } from "../presence";
 import {
   DEFAULT_KEYBINDS,
   comboFromEvent,
@@ -50,6 +51,7 @@ export function renderSetup(
       <div class="level-meter" style="margin-top:10px"><div id="meter"></div></div>
       <div class="label" style="margin-top:18px">Intent — a title, or paste your whole notes</div>
       <textarea id="intent" rows="4" placeholder="what do you want to talk about?"></textarea>
+      <p id="focusLine" class="focus-line" style="display:none;"></p>
       <div style="margin-top:16px; display:flex; gap:10px;">
         <button id="start">Begin the talk</button>
       </div>
@@ -64,6 +66,15 @@ export function renderSetup(
       <div class="key-row"><span>Pause / resume listening</span><kbd id="kbdPause"></kbd><button class="quiet key-change" data-bind="pause">change</button></div>
       <p class="label key-hint" id="keyHint"></p>
       <button class="quiet key-reset" id="keysReset">reset to defaults</button>
+    </div>
+    <div class="paper-panel" style="margin-top:22px; padding:14px 16px;">
+      <div class="label" style="margin-bottom:8px;">Companion</div>
+      <div class="presence-row">
+        <button class="quiet presence-opt" data-presence="present">present</button>
+        <button class="quiet presence-opt" data-presence="quieter">quieter</button>
+        <button class="quiet presence-opt" data-presence="recap-only">recap only</button>
+      </div>
+      <p class="label key-hint" id="presenceHint"></p>
     </div>
   `;
 
@@ -435,6 +446,39 @@ export function renderSetup(
     saveKeybinds(keybinds);
     renderKbds();
   };
+
+  // Focus thread: the last retro's experiment rides into the next take —
+  // deliberate practice, one focus at a time. Best-effort; absent quietly.
+  const focusLineEl = root.querySelector<HTMLElement>("#focusLine")!;
+  ipc
+    .latestFocus()
+    .then((focus) => {
+      if (focus) {
+        focusLineEl.textContent = `carrying forward — ${focus}`;
+        focusLineEl.style.display = "";
+      }
+    })
+    .catch(() => {
+      /* no focus line, nothing lost */
+    });
+
+  // ---- Companion presence: how much the companion says during a take ----
+  const presenceHintEl = root.querySelector<HTMLElement>("#presenceHint")!;
+  const presenceButtons = root.querySelectorAll<HTMLButtonElement>("button.presence-opt");
+  const renderPresence = () => {
+    const current = loadPresence();
+    presenceButtons.forEach((btn) => {
+      btn.classList.toggle("selected", btn.dataset.presence === current);
+    });
+    presenceHintEl.textContent = PRESENCE_HINTS[current];
+  };
+  renderPresence();
+  presenceButtons.forEach((btn) => {
+    btn.onclick = () => {
+      savePresence(btn.dataset.presence as Presence);
+      renderPresence();
+    };
+  });
 
   // Start-the-talk hotkey. Deliberately no typing-target guard: pressing
   // ⌘/Ctrl+Enter straight from the intent textarea is the natural flow.
