@@ -46,11 +46,9 @@ export function renderSetup(
   // follow; everything set-once (keys, companion, over-time) folds into a
   // single collapsed Settings disclosure built below.
   root.innerHTML = `
-    <div class="setup-header">
-      <h1>Yapper</h1>
-      <aside id="setupWisp" aria-label="companion"></aside>
-    </div>
-    <div class="paper-panel setup-hero">
+    <h1 class="setup-wordmark">Yapper</h1>
+    <div class="setup-top">
+      <div class="paper-panel setup-hero">
       <div class="label">Microphone</div>
       <div class="mic-row">
         <select id="mic"></select>
@@ -63,6 +61,8 @@ export function renderSetup(
         <button id="start">Begin the talk</button>
       </div>
       <p id="error" class="paused-note" role="alert"></p>
+      </div>
+      <aside class="setup-wisp-col"><div id="setupWisp" aria-label="companion"></div></aside>
     </div>
     <div id="modelBanner"></div>
     <div id="past" style="margin-top:22px;"></div>
