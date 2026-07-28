@@ -28,14 +28,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Windows → NSIS .exe installer (+ .msi). CPU-only inference (no Metal).
-          - platform: windows-latest
-            args: ""
+          # NOTE: windows-latest is temporarily out of the matrix while the
+          # Linux AppImage packaging is fixed — Windows already builds green
+          # and its installers are on the release. Restore before the next
+          # release: { platform: windows-latest, args: "" }.
+          #
           # Linux → AppImage (distro-agnostic; this is the one that runs on
           # SteamOS / Steam Deck desktop) + .deb. Built on 22.04 for a broadly
-          # compatible glibc.
+          # compatible glibc. --verbose surfaces linuxdeploy's real error,
+          # which Tauri otherwise swallows.
           - platform: ubuntu-22.04
-            args: "--bundles appimage,deb"
+            args: "--verbose --bundles appimage,deb"
     runs-on: ${{ matrix.platform }}
 
     steps:
