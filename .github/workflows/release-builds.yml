@@ -77,12 +77,31 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # sherpa-onnx ships a shared lib (libsherpa-onnx-c-api.so + libonnxruntime.so)
+      # in sherpa-rs's build dir, not a standard library path. The binary links it
+      # via rpath so it runs, but linuxdeploy resolves deps with ldd and can't find
+      # it ("Could not find dependency: libsherpa-onnx-c-api.so"). So: compile first
+      # (which downloads the .so), then put its directory on LD_LIBRARY_PATH so the
+      # bundle step's linuxdeploy can locate and pack it into the AppImage.
+      - name: Pre-compile to fetch sherpa/onnxruntime shared libs (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: npm run tauri build -- --no-bundle
+
+      - name: Expose sherpa shared lib to linuxdeploy (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          SO_DIR=$(find "$GITHUB_WORKSPACE/src-tauri/target" "$HOME/.cache" "$HOME/.local" \
+            -name 'libsherpa-onnx-c-api.so' -printf '%h\n' 2>/dev/null | head -1)
+          echo "sherpa shared-lib dir: $SO_DIR"
+          test -n "$SO_DIR" || { echo "libsherpa-onnx-c-api.so not found"; exit 1; }
+          echo "LD_LIBRARY_PATH=$SO_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
       - name: Build and attach to the release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # GitHub runners have no FUSE, so linuxdeploy/appimagetool can't
-          # mount their own AppImages — extract-and-run instead of FUSE-mount.
+          # LD_LIBRARY_PATH (set above on Linux) lets linuxdeploy resolve sherpa's
+          # .so. APPIMAGE_EXTRACT_AND_RUN keeps the AppImage tools off FUSE.
           APPIMAGE_EXTRACT_AND_RUN: "1"
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
