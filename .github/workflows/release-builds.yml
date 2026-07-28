@@ -28,19 +28,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # NOTE: windows-latest is out of the matrix for now. It BUILDS green,
-          # but the NSIS/MSI installers don't bundle sherpa's onnxruntime.dll /
-          # sherpa-onnx-c-api.dll, so the app crashes at launch with a missing
-          # DLL — the same root cause fixed on macOS (Contents/Frameworks) and
-          # Linux (linuxdeploy bundles the .so). Restore it together with a
-          # DLL-bundling step: { platform: windows-latest, args: "" }.
-          #
-          # Linux → AppImage (distro-agnostic; this is the one that runs on
-          # SteamOS / Steam Deck desktop) + .deb. Built on 22.04 for a broadly
-          # compatible glibc. --verbose surfaces linuxdeploy's real error,
-          # which Tauri otherwise swallows.
-          - platform: ubuntu-22.04
-            args: "--verbose --bundles appimage,deb"
+          # Windows → NSIS .exe + .msi. The DLL-bundling steps below pack
+          # sherpa's onnxruntime.dll / sherpa-onnx-c-api.dll next to the exe
+          # (without them the app crashes at launch with a missing DLL).
+          - platform: windows-latest
+            args: ""
+          # Linux is DONE and shipped (self-contained AppImage). Temporarily
+          # out of the matrix while iterating on the Windows DLL fix; restore
+          # for the next release:
+          #   - platform: ubuntu-22.04
+          #     args: "--bundles appimage,deb"
     runs-on: ${{ matrix.platform }}
 
     steps:
@@ -97,6 +94,32 @@ jobs:
           echo "sherpa shared-lib dir: $SO_DIR"
           test -n "$SO_DIR" || { echo "libsherpa-onnx-c-api.so not found"; exit 1; }
           echo "LD_LIBRARY_PATH=$SO_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+      # Windows: same class of problem as macOS/Linux. sherpa ships DLLs
+      # (onnxruntime.dll, sherpa-onnx-c-api.dll, ...) that Tauri doesn't bundle,
+      # so the installed app crashes with a missing DLL. Compile first so the
+      # DLLs land in target/release, then generate a Windows-only tauri config
+      # that bundles each DLL flat next to the exe (on Windows, Tauri's resource
+      # root IS the exe folder, so a flattened resource loads at runtime).
+      - name: Pre-compile to fetch sherpa/onnxruntime DLLs (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: npm run tauri build -- --no-bundle
+
+      - name: Generate tauri.windows.conf.json bundling the DLLs (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          cd src-tauri
+          entries=""
+          for dll in target/release/*.dll; do
+            [ -e "$dll" ] || continue
+            base=$(basename "$dll")
+            entries="$entries\"$dll\": \"$base\","
+          done
+          entries=${entries%,}
+          test -n "$entries" || { echo "no DLLs found in target/release"; exit 1; }
+          printf '{ "bundle": { "resources": { %s } } }\n' "$entries" > tauri.windows.conf.json
+          echo "--- tauri.windows.conf.json ---"; cat tauri.windows.conf.json
 
       - name: Build and attach to the release
         uses: tauri-apps/tauri-action@v0
