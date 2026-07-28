@@ -77,6 +77,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GitHub runners have no FUSE, so linuxdeploy/appimagetool can't
+          # mount their own AppImages — extract-and-run instead of FUSE-mount.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "Yapper ${{ github.event.inputs.tag || github.ref_name }}"
