@@ -471,6 +471,10 @@ button.presence-opt.selected {
   border-radius: 3px; padding: 5px 12px; cursor: pointer;
 }
 .talk-recap:hover, .talk-recap:focus-visible { background: var(--gold); color: var(--ink); border-color: transparent; outline: none; }
+.talk-recap.danger { color: var(--ember-ink); border-color: rgba(150, 42, 30, 0.4); }
+.talk-recap.danger:hover, .talk-recap.danger:focus-visible { background: var(--ember-ink); color: var(--paper); border-color: transparent; }
+.talk-confirm { gap: 10px; }
+.talk-confirm .talk-intent { flex: 1; font-style: normal; }
 
 .settings-panel { padding: 4px 18px; }
 .settings-group { padding: 10px 0 14px; border-top: 1px solid rgba(184, 166, 126, 0.28); }

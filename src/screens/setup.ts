@@ -364,19 +364,53 @@ export function renderSetup(
               void refreshPast(); // file may have vanished since last poll
             }),
         });
-      } else {
-        items.push({
-          label: "Forget",
-          onSelect: () =>
-            ipc.forgetSession(s.id).then(() => refreshPast()).catch((e) => {
-              errorEl.textContent = String(e);
-            }),
-        });
       }
+      // Forget deletes the recording and transcript for good — always offered,
+      // gated behind an inline confirm since it can't be undone.
+      items.push({
+        label: "Forget",
+        onSelect: () => confirmForget(row, s.id),
+      });
       if (items.length) row.appendChild(createOverflowMenu(items));
 
       pastEl.appendChild(row);
     }
+  }
+
+  // Replace a talk row in place with a "delete for good?" strip. Confirming
+  // deletes the recording + transcript; cancelling re-renders the list (forced
+  // past the pastKey guard, since nothing on the server changed).
+  function confirmForget(row: HTMLElement, id: number): void {
+    row.innerHTML = "";
+    row.classList.add("talk-confirm");
+
+    const msg = document.createElement("span");
+    msg.className = "talk-intent";
+    msg.textContent = "Delete this talk's recording and transcript? This can't be undone.";
+
+    const del = document.createElement("button");
+    del.className = "talk-recap danger";
+    del.textContent = "Delete";
+    del.onclick = () =>
+      ipc.forgetSession(id).then(() => refreshPast()).catch((e) => {
+        errorEl.textContent = String(e);
+        void reRenderPast();
+      });
+
+    const cancel = document.createElement("button");
+    cancel.className = "quiet";
+    cancel.textContent = "Cancel";
+    cancel.onclick = () => void reRenderPast();
+
+    row.append(msg, del, cancel);
+    del.focus();
+  }
+
+  // Force refreshPast to rebuild even when the session list is byte-identical
+  // (used after cancel/error, where the row was mutated but no data changed).
+  function reRenderPast(): Promise<void> {
+    pastKey = "";
+    return refreshPast();
   }
 
   // "Over time": fillers-per-speaking-minute per completed talk, oldest to

@@ -636,11 +636,33 @@ fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>, YapperError
         .collect()
 }
 
-/// Remove a session row whose recording the user no longer wants tracked.
-/// Never touches the audio file itself.
+/// Delete a talk the user no longer wants — leaving no trace on disk. Removes
+/// the audio recording and any transcript exported beside it (`.srt`/`.txt`
+/// sidecars from `export_transcript`), then drops the DB row, which cascades
+/// the transcript segments, events, and outline. The row is deleted last so a
+/// hard file-delete error surfaces without orphaning the recording.
 #[tauri::command]
 fn forget_session(state: State<'_, AppState>, id: i64) -> Result<(), YapperError> {
+    let session = state.store.get_session(id)?;
+    if let Some(path) = session.audio_path.as_deref() {
+        remove_if_present(std::path::Path::new(path))?;
+        // The in-place transcript exports share the audio file's stem.
+        let base = std::path::Path::new(path).with_extension("");
+        let _ = std::fs::remove_file(base.with_extension("srt"));
+        let _ = std::fs::remove_file(base.with_extension("txt"));
+    }
     state.store.delete_session(id)
+}
+
+/// Delete a file, treating an already-absent file as success — the user's
+/// intent ("no trace left") is satisfied whether or not it was still there
+/// (it may have been moved or deleted in Finder since the last poll).
+fn remove_if_present(path: &std::path::Path) -> Result<(), YapperError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(YapperError::State(format!("could not delete recording: {e}"))),
+    }
 }
 
 #[tauri::command]
