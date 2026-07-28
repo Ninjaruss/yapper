@@ -1,6 +1,17 @@
 import { ipc, type InputDevice, type Session } from "../ipc";
 import { escapeHtml } from "../escape";
 import { fmtDate, fmtDuration } from "../format";
+import { createWisp } from "../wisp";
+import { PRESENCE_HINTS, loadPresence, savePresence, type Presence } from "../presence";
+import {
+  DEFAULT_KEYBINDS,
+  comboFromEvent,
+  eventMatchesCombo,
+  loadKeybinds,
+  prettyCombo,
+  saveKeybinds,
+  type Keybinds,
+} from "../keys";
 
 const REFRESH_MS = 4000;
 
@@ -30,13 +41,17 @@ export function renderSetup(
   modelReadyUnlisten = null;
 
   root.innerHTML = `
-    <h1>Yapper</h1>
+    <div class="setup-header">
+      <h1>Yapper</h1>
+      <aside id="setupWisp" aria-label="companion"></aside>
+    </div>
     <div class="paper-panel">
       <div class="label">Microphone</div>
       <select id="mic"></select>
       <div class="level-meter" style="margin-top:10px"><div id="meter"></div></div>
       <div class="label" style="margin-top:18px">Intent — a title, or paste your whole notes</div>
       <textarea id="intent" rows="4" placeholder="what do you want to talk about?"></textarea>
+      <p id="focusLine" class="focus-line" style="display:none;"></p>
       <div style="margin-top:16px; display:flex; gap:10px;">
         <button id="start">Begin the talk</button>
       </div>
@@ -45,7 +60,29 @@ export function renderSetup(
     <div id="modelBanner"></div>
     <div id="past" style="margin-top:22px;"></div>
     <div id="trend"></div>
+    <div class="paper-panel" style="margin-top:22px; padding:14px 16px;">
+      <div class="label" style="margin-bottom:8px;">Keys</div>
+      <div class="key-row"><span>Begin / end the talk</span><kbd id="kbdStartEnd"></kbd><button class="quiet key-change" data-bind="startEnd">change</button></div>
+      <div class="key-row"><span>Pause / resume listening</span><kbd id="kbdPause"></kbd><button class="quiet key-change" data-bind="pause">change</button></div>
+      <p class="label key-hint" id="keyHint"></p>
+      <button class="quiet key-reset" id="keysReset">reset to defaults</button>
+    </div>
+    <div class="paper-panel" style="margin-top:22px; padding:14px 16px;">
+      <div class="label" style="margin-bottom:8px;">Companion</div>
+      <div class="presence-row" role="radiogroup" aria-label="Companion presence">
+        <button class="quiet presence-opt" data-presence="present" role="radio">present</button>
+        <button class="quiet presence-opt" data-presence="quieter" role="radio">quieter</button>
+        <button class="quiet presence-opt" data-presence="recap-only" role="radio">recap only</button>
+      </div>
+      <p class="label key-hint" id="presenceHint"></p>
+    </div>
   `;
+
+  // The companion is present at the desk even before a talk — asleep, a
+  // pilot light. The live screen's wisp wakes fresh; this one just sleeps.
+  const wisp = createWisp();
+  wisp.setState("sleep");
+  root.querySelector<HTMLElement>("#setupWisp")!.appendChild(wisp.el);
 
   const mic = root.querySelector<HTMLSelectElement>("#mic")!;
   const errorEl = root.querySelector<HTMLParagraphElement>("#error")!;
@@ -88,9 +125,6 @@ export function renderSetup(
     if (ready.stt && ready.llm) return;
 
     bannerEl.innerHTML = `
-      <style>
-        @keyframes yapper-model-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.85; } }
-      </style>
       <div class="paper-panel" style="margin-top:22px;">
         <div class="label">First run</div>
         <p id="modelText" class="paused-note" style="margin-bottom:8px;">${textForModel(ready.stt ? "llm" : "moonshine-base-en-int8")}</p>
@@ -189,12 +223,22 @@ export function renderSetup(
   // Both lists refresh while this screen is visible: devices come and go
   // (bluetooth mics), recordings get deleted in Finder. Selection and
   // scroll are preserved; DOM is only touched when content actually changed.
-  let deviceKey = "";
+  // Sentinel (not "") so the very first refresh always renders — an empty
+  // device list has key "", which would otherwise match the initial value
+  // and skip drawing the placeholder.
+  let deviceKey = " ";
   async function refreshDevices(): Promise<void> {
     const devices: InputDevice[] = await ipc.listInputDevices();
     const key = devices.map((d) => `${d.name}${d.is_default ? "*" : ""}`).join("|");
     if (key === deviceKey) return;
     deviceKey = key;
+    if (devices.length === 0) {
+      // No inputs found — a plain disabled placeholder instead of an empty
+      // dropdown. Begin-the-talk still works: start_session falls back to the
+      // system default device when none is passed.
+      mic.innerHTML = `<option value="" disabled selected>no microphone found</option>`;
+      return;
+    }
     const previous = mic.value;
     mic.innerHTML = devices
       .map((d) => `<option value="${escapeHtml(d.name)}" ${d.is_default ? "selected" : ""}>${escapeHtml(d.name)}</option>`)
@@ -224,20 +268,20 @@ export function renderSetup(
       return;
     }
     pastEl.innerHTML = `
-      <div class="label" style="margin-bottom:8px;">Past talks</div>
+      <div class="label on-desk" style="margin-bottom:8px;">Past talks</div>
       ${sessions
         .map((s) => {
           const dur = s.duration_ms != null ? fmtDuration(s.duration_ms) : "interrupted";
           const intent = s.intent.trim().split("\n")[0].slice(0, 60);
           const fileUi = s.audio_exists
-            ? `<button class="quiet reveal" data-id="${s.id}" style="color:var(--ink); border-color:var(--ink-soft); padding:6px 12px; font-size:0.85rem;">Show file</button>`
+            ? `<button class="quiet reveal" data-id="${s.id}" style="padding:6px 12px; font-size:0.85rem;">Show file</button>`
             : `<span style="font-style:italic; color:var(--ember); font-size:0.85rem;">file missing</span>
-               <button class="quiet forget" data-id="${s.id}" style="color:var(--ink); border-color:var(--ink-soft); padding:6px 12px; font-size:0.85rem;">Forget</button>`;
+               <button class="quiet forget" data-id="${s.id}" style="padding:6px 12px; font-size:0.85rem;">Forget</button>`;
           const exportUi = s.segment_count > 0
-            ? `<button class="quiet export" data-id="${s.id}" style="color:var(--ink); border-color:var(--ink-soft); padding:6px 12px; font-size:0.85rem;">Export transcript</button>`
+            ? `<button class="quiet export" data-id="${s.id}" style="padding:6px 12px; font-size:0.85rem;">Export transcript</button>`
             : "";
           const recapUi = s.duration_ms != null
-            ? `<button class="quiet recap" data-id="${s.id}" style="color:var(--ink); border-color:var(--ink-soft); padding:6px 12px; font-size:0.85rem;">Recap</button>`
+            ? `<button class="quiet recap" data-id="${s.id}" style="padding:6px 12px; font-size:0.85rem;">Recap</button>`
             : "";
           return `
             <div class="paper-panel" style="display:flex; align-items:center; gap:14px; padding:10px 16px; margin-bottom:8px;">
@@ -332,8 +376,8 @@ export function renderSetup(
     const last = coords[coords.length - 1]!;
     return `
       <svg viewBox="0 0 ${W} ${H}" width="100%" height="48" preserveAspectRatio="none" role="img" aria-label="fillers per minute, by talk">
-        <polyline points="${linePoints}" fill="none" style="stroke:var(--gold); stroke-width:2;" stroke-linecap="round" stroke-linejoin="round" />
-        <circle cx="${last.x.toFixed(2)}" cy="${last.y.toFixed(2)}" r="3.5" style="fill:var(--gold);" />
+        <polyline points="${linePoints}" fill="none" style="stroke:var(--gold-ink); stroke-width:2.5;" stroke-linecap="round" stroke-linejoin="round" />
+        <circle cx="${last.x.toFixed(2)}" cy="${last.y.toFixed(2)}" r="3.5" style="fill:var(--gold-ink);" />
       </svg>
     `;
   }
@@ -357,6 +401,124 @@ export function renderSetup(
     `;
   }
 
+  // ---- Keys panel: show current binds, capture replacements, persist ----
+  let keybinds: Keybinds = loadKeybinds();
+  const kbdEls = {
+    pause: root.querySelector<HTMLElement>("#kbdPause")!,
+    startEnd: root.querySelector<HTMLElement>("#kbdStartEnd")!,
+  };
+  const keyHintEl = root.querySelector<HTMLElement>("#keyHint")!;
+  const renderKbds = () => {
+    kbdEls.pause.textContent = prettyCombo(keybinds.pause);
+    kbdEls.startEnd.textContent = prettyCombo(keybinds.startEnd);
+  };
+  renderKbds();
+
+  // While capturing, the next non-modifier keydown becomes the bind
+  // (Escape cancels). Capture-phase listener so the start hotkey below
+  // never fires off the very keystroke being recorded.
+  let captureCleanup: (() => void) | null = null;
+  const stopCapture = () => {
+    captureCleanup?.();
+    captureCleanup = null;
+    keyHintEl.textContent = "";
+  };
+  root.querySelectorAll<HTMLButtonElement>("button.key-change").forEach((btn) => {
+    btn.onclick = () => {
+      stopCapture();
+      const bind = btn.dataset.bind as keyof Keybinds;
+      keyHintEl.textContent = "press a key combination… (Esc cancels)";
+      const onCapture = (e: KeyboardEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.code === "Escape") {
+          stopCapture();
+          return;
+        }
+        const combo = comboFromEvent(e);
+        if (!combo) return; // bare modifier — keep waiting
+        keybinds = { ...keybinds, [bind]: combo };
+        saveKeybinds(keybinds);
+        renderKbds();
+        stopCapture();
+      };
+      window.addEventListener("keydown", onCapture, { capture: true });
+      captureCleanup = () =>
+        window.removeEventListener("keydown", onCapture, { capture: true });
+    };
+  });
+  root.querySelector<HTMLButtonElement>("#keysReset")!.onclick = () => {
+    stopCapture();
+    keybinds = { ...DEFAULT_KEYBINDS };
+    saveKeybinds(keybinds);
+    renderKbds();
+  };
+
+  // Focus thread: the last retro's experiment rides into the next take —
+  // deliberate practice, one focus at a time. Best-effort; absent quietly.
+  const focusLineEl = root.querySelector<HTMLElement>("#focusLine")!;
+  ipc
+    .latestFocus()
+    .then((focus) => {
+      if (focus) {
+        focusLineEl.textContent = `carrying forward — ${focus}`;
+        focusLineEl.style.display = "";
+      }
+    })
+    .catch(() => {
+      /* no focus line, nothing lost */
+    });
+
+  // ---- Companion presence: how much the companion says during a take ----
+  const presenceHintEl = root.querySelector<HTMLElement>("#presenceHint")!;
+  const presenceButtons = root.querySelectorAll<HTMLButtonElement>("button.presence-opt");
+  const renderPresence = () => {
+    const current = loadPresence();
+    presenceButtons.forEach((btn) => {
+      const active = btn.dataset.presence === current;
+      btn.classList.toggle("selected", active);
+      // Radiogroup semantics: a radio announces via aria-checked (not
+      // aria-pressed), and only the checked option is a tab stop — arrow
+      // keys move between the rest (roving tabindex).
+      btn.setAttribute("aria-checked", String(active));
+      btn.tabIndex = active ? 0 : -1;
+    });
+    presenceHintEl.textContent = PRESENCE_HINTS[current];
+  };
+  renderPresence();
+  const selectPresence = (btn: HTMLButtonElement) => {
+    savePresence(btn.dataset.presence as Presence);
+    renderPresence();
+  };
+  presenceButtons.forEach((btn, i) => {
+    btn.onclick = () => selectPresence(btn);
+    // Arrow keys walk the group and select as they land — the WAI-ARIA
+    // radiogroup pattern. Wraps at both ends.
+    btn.onkeydown = (e) => {
+      const dir =
+        e.key === "ArrowRight" || e.key === "ArrowDown"
+          ? 1
+          : e.key === "ArrowLeft" || e.key === "ArrowUp"
+            ? -1
+            : 0;
+      if (dir === 0) return;
+      e.preventDefault();
+      const next = presenceButtons[(i + dir + presenceButtons.length) % presenceButtons.length];
+      selectPresence(next);
+      next.focus();
+    };
+  });
+
+  // Start-the-talk hotkey. Deliberately no typing-target guard: pressing
+  // ⌘/Ctrl+Enter straight from the intent textarea is the natural flow.
+  const onHotkey = (e: KeyboardEvent) => {
+    if (!e.repeat && eventMatchesCombo(e, keybinds.startEnd)) {
+      e.preventDefault();
+      root.querySelector<HTMLButtonElement>("#start")!.click();
+    }
+  };
+  window.addEventListener("keydown", onHotkey);
+
   const refreshAll = () => {
     refreshDevices().catch((e) => { errorEl.textContent = String(e); });
     refreshPast().catch((e) => { errorEl.textContent = String(e); });
@@ -367,7 +529,10 @@ export function renderSetup(
   const cleanup = () => {
     clearInterval(timer);
     window.removeEventListener("focus", refreshAll);
+    window.removeEventListener("keydown", onHotkey);
+    stopCapture();
     stopModelListeners();
+    wisp.destroy();
   };
 
   root.querySelector<HTMLButtonElement>("#start")!.onclick = async () => {

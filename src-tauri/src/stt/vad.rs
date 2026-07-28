@@ -3,7 +3,7 @@
 //! splits are fine (the LLM lane later re-joins meaning); missed splits are
 //! bounded by the force-cut.
 
-const RATE: usize = 16_000;
+const RATE: usize = crate::stt::SAMPLE_RATE_HZ;
 const FRAME_MS: usize = 30;
 const FRAME: usize = RATE * FRAME_MS / 1000;
 const SILENCE_RMS: f32 = 0.01;

@@ -4,7 +4,7 @@
 use crate::error::YapperError;
 use rubato::{FftFixedIn, Resampler as _};
 
-const TARGET_RATE: usize = 16_000;
+const TARGET_RATE: usize = crate::stt::SAMPLE_RATE_HZ;
 const BLOCK: usize = 1024;
 
 pub struct Resampler {

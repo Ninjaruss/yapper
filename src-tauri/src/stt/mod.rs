@@ -10,6 +10,11 @@ pub mod worker;
 use crate::error::YapperError;
 use serde::Serialize;
 
+/// The pipeline's fixed sample rate: everything downstream of the resampler
+/// (VAD, utterance timing, the Moonshine engine) works in 16 kHz mono. One
+/// definition so the rate can never disagree between the modules that use it.
+pub const SAMPLE_RATE_HZ: usize = 16_000;
+
 /// One transcribed utterance, timestamped against the session's speech
 /// clock (pause time excluded, matching the WAV's timeline).
 #[derive(Debug, Clone, Serialize)]

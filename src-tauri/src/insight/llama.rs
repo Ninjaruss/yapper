@@ -35,11 +35,11 @@ pub const LLM_MODEL_FILE: &str = "model.gguf";
 /// framing shared by both.
 const SYSTEM_PROMPT: &str = "You are a silent note-taking companion. Reply with STRICT JSON only, no prose, no code fences.";
 
-/// Context window budget — matches the Task 1 spike's chosen budget (the
-/// model's trained context is far larger; this is a deliberate cap, not a
-/// model limitation). `build_prompt`'s output must fit comfortably inside
-/// this minus `MAX_OUTPUT_TOKENS`.
-const N_CTX: u32 = 2048;
+/// Context window budget. 8192 fits the retro pass over a full 20-minute transcript AND gives the live prompt (examples + frozen
+/// outline + ~90s transcript) comfortable headroom over the former 2048
+/// while staying tiny next to Qwen2.5's 32k ceiling; KV-cache cost at 8192
+/// is negligible on the M4/Metal target.
+const N_CTX: u32 = 8192;
 
 /// Output token budget per insight call — generous headroom over the
 /// ~80-100 tokens observed in the Task 1 spike for a similarly-shaped
@@ -178,7 +178,11 @@ impl InsightEngine for LlamaEngine {
         let mut sampler = LlamaSampler::chain_simple([
             LlamaSampler::top_k(40),
             LlamaSampler::top_p(0.9, 1),
-            LlamaSampler::temp(0.3),
+            // 0.45 (up from the spike's 0.3): harness runs showed the model
+            // settling into copying the outline verbatim pass after pass; a
+            // little more temperature unsticks that while staying
+            // JSON-reliable (parse_update tolerates the rest).
+            LlamaSampler::temp(0.45),
             LlamaSampler::dist(seed),
         ]);
 

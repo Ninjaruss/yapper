@@ -13,6 +13,10 @@ describe("fmtDuration", () => {
   it("formats 61 minutes 1 second as 61:01", () => {
     expect(fmtDuration(3_661_000)).toBe("61:01");
   });
+
+  it("clamps negative input to 0:00", () => {
+    expect(fmtDuration(-5_000)).toBe("0:00");
+  });
 });
 
 describe("fmtDate", () => {

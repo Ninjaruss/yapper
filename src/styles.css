@@ -8,8 +8,11 @@
   --ink-soft: #6f5a33;
   --gold: #d9a92e;
   --gold-bright: #ffe52c;
+  --gold-ink: #6b4f0f; /* gold for TEXT ON PARCHMENT — bright golds are desk-only */
+  --ember-ink: #8a4a12; /* ember for TEXT ON PARCHMENT — bright ember is desk-only */
+  --parchment-dim: #b8a67e; /* muted parchment for quiet text ON THE DESK (labels, wisp caption) */
   --ember: #e8912c;
-  --meter-bg: rgba(0, 0, 0, 0.4);
+  --meter-bg: rgba(26, 20, 8, 0.35); /* warm dark track, not neutral black */
   --serif: Georgia, "Iowan Old Style", serif;
   --mono: ui-monospace, Menlo, monospace;
 }
@@ -20,8 +23,35 @@ body {
   font-family: var(--serif);
   color: var(--paper);
   background: radial-gradient(ellipse at 68% 55%, var(--desk-glow), var(--desk) 55%, #1a140c);
+  /* The candle pool is anchored to the viewport, not the page — otherwise a
+     long Past Talks list stretches the gradient and the desk fades to black. */
+  background-attachment: fixed;
   min-height: 100vh;
 }
+
+/* Wordmark headings ("Yapper", "The recap") — a quiet gold plate on the
+   desk, not a billboard. */
+h1 {
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin: 0 0 18px;
+}
+
+/* Cool webkit defaults clash with the study: text selection and input
+   focus both go warm. Buttons already have their own focus treatment. */
+::selection { background: rgba(217, 169, 46, 0.35); }
+select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 1px;
+  border-color: var(--gold);
+}
+
+/* Quiet text sitting directly on the desk (Past Talks header, recap stats)
+   — ink tones vanish there; parchment-dim reads without shouting. */
+.label.on-desk { color: var(--parchment-dim); }
 
 .screen { max-width: 900px; margin: 0 auto; padding: 32px 20px; }
 
@@ -54,6 +84,12 @@ button {
 button:hover, button:focus-visible { background: var(--gold-bright); }
 button.quiet { background: transparent; color: var(--paper); border: 1px solid var(--ink-soft); }
 button.quiet:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+/* Quiet buttons sitting ON parchment (live header, recap) need ink, not
+   paper, text — same on-desk/on-paper role split as the golds. */
+.paper-panel button.quiet { color: var(--ink); }
+/* Same split for ember notes: readable dark ember when they sit on paper
+   (stt status in the transcript panel, recap error lines). */
+.paper-panel .paused-note { color: var(--ember-ink); }
 
 select, textarea {
   font-family: var(--serif);
@@ -77,26 +113,54 @@ select, textarea {
   background: linear-gradient(90deg, var(--gold), var(--ember));
   transition: width 80ms linear;
 }
+/* First-run model download bar: pulses at reduced opacity while progress is
+   indeterminate (no Content-Length). Driven by setup.ts via inline styles. */
+@keyframes yapper-model-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.85; } }
 
-.elapsed { font-family: var(--mono); font-size: 2.4rem; color: var(--gold-bright); }
+.elapsed { font-family: var(--mono); font-size: 2.4rem; color: var(--gold-ink); }
 .paused-note { color: var(--ember); font-style: italic; }
 
 /* Repetition-echo glow: the transcript line being echoed, briefly tinted
    gold (--gold as rgb(217, 169, 46)) then eased back to nothing. */
 .echo-glow { background: rgba(217, 169, 46, 0.25); transition: background 1.5s ease; border-radius: 3px; }
 
-/* "So far" outline: Covered plain, Current bold+gold, IntentUntouched
-   ghosted. shine-underline briefly marks the Current line on insight:shine. */
-#outline p {
+/* "So far" outline — the visual grammar is: brightness = now, ink = done,
+   ghost = ahead. Status glyphs live in CSS (::before) so element text stays
+   the pure label. shine-underline briefly marks the Current line. */
+#outline p,
+#recapOutline p {
   margin: 4px 0;
+  font-size: 1.06rem;
   border-bottom: 2px solid transparent;
   transition: border-bottom-color 1.2s ease;
 }
 .outline-covered { color: var(--ink); }
-.outline-current { font-weight: bold; color: var(--gold); }
-.outline-intent { opacity: .55; }
+.outline-covered::before { content: "✓ "; color: var(--ink-soft); opacity: 0.6; }
+.outline-current {
+  font-weight: bold;
+  color: var(--gold-ink);
+  font-size: 1.14rem;
+  border-left: 3px solid var(--gold);
+  padding-left: 8px;
+  margin-left: -11px;
+}
+.outline-intent { opacity: 0.55; font-style: italic; }
+.outline-intent::before { content: "◌ "; }
+/* Muted status lines ("listening for the shape of it…", recap's "no
+   outline") share the ghost look but are NOT outline entries — no glyph. */
+.outline-note { opacity: 0.55; font-style: italic; }
 .outline-current.shine-underline { border-bottom-color: var(--gold-bright); }
 
+/* A new topic fades in with a warm shimmer that decays — the eye is drawn
+   to exactly what changed and nothing else. */
+@keyframes outline-arrive {
+  from { opacity: 0; background: rgba(217, 169, 46, 0.28); }
+  to { opacity: 1; background: transparent; }
+}
+.outline-arriving { animation: outline-arrive 1.5s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .outline-arriving { animation: none; }
+}
 
 /* ---- live screen layout: the outline is the mirror; the wisp lives on the
    desk beside the paper (per the approved design), not inside it ---- */
@@ -128,22 +192,171 @@ select, textarea {
 }
 
 /* The outline reads as the primary surface; the transcript recedes. */
-#outline p { font-size: 1.06rem; }
 .transcript-panel #transcript p {
   font-size: 0.92rem;
   color: #5f5138;
   margin: 5px 0;
 }
 
-/* WONDERING: a parchment chip with a gold spine, per the design language. */
+/* Fillers as thinner ink — seen, never counted or judged. */
+#transcript .filler { opacity: 0.5; }
+
+/* A real silence renders as ordinary quiet punctuation: pauses are fine. */
+#transcript .pause-mark {
+  color: var(--ink-soft);
+  opacity: 0.55;
+  letter-spacing: 0.3em;
+  margin: 2px 0;
+  user-select: none;
+}
+
+/* Lost-thread anchor: while the speaker is thinking, the last spoken line
+   gently comes forward — same bar language as the outline's current topic.
+   The transition makes it arrive as a breath, not a blink. */
+.transcript-panel #transcript p.thread-anchor {
+  color: var(--ink);
+  border-left: 3px solid var(--gold);
+  padding-left: 8px;
+  margin-left: -11px;
+  transition: color 0.9s ease, border-color 0.9s ease;
+}
+
+/* Quiet time-in-topic marker beside the current outline line. */
+.topic-time {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: normal;
+  color: var(--ink-soft);
+  letter-spacing: 0.05em;
+  margin-left: 10px;
+  vertical-align: 1px;
+}
+
+/* WONDERING: a parchment chip with a gold spine. Type matches the outline
+   (it comments on the outline — it must not whisper under it). On arrival
+   the text fades in and the spine glows briefly, then settles (~4s) —
+   glanceable, never demanding. Wrap-up reuses the chip with an EMBER spine
+   ("Worth calling back") so it never masquerades as a question. */
 .wondering-chip {
   background: var(--paper-deep);
   border-left: 3px solid var(--gold);
   border-radius: 3px;
   padding: 8px 12px;
   font-style: italic;
+  font-size: 1.06rem;
   margin: 6px 0 0;
 }
+@keyframes chip-arrive {
+  0% { opacity: 0; border-left-color: var(--gold-bright); box-shadow: 0 0 14px rgba(217, 169, 46, 0.45); }
+  30% { opacity: 1; }
+  100% { opacity: 1; border-left-color: var(--gold); box-shadow: none; }
+}
+.wondering-chip.chip-arriving { animation: chip-arrive 4s ease; }
+.wondering-chip.chip-callback { border-left-color: var(--ember); }
+.wondering-chip.chip-callback.chip-arriving { animation: none; } /* wrap-up arrives quietly */
+@media (prefers-reduced-motion: reduce) {
+  .wondering-chip.chip-arriving { animation: none; }
+}
+
+/* Setup header: wordmark left, the sleeping companion at the desk's edge. */
+.setup-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+#setupWisp { --wisp-size: 84px; margin-top: -10px; }
+
+/* Live header: the current chapter, named — a glance says where you are. */
+.chapter-title {
+  font-style: italic;
+  color: var(--ink-soft);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Classic scrollbars (SteamOS/Linux; macOS overlay bars ignore most of
+   this) stay in the study's palette instead of stock grey. */
+:root { scrollbar-width: thin; scrollbar-color: rgba(111, 90, 51, 0.55) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgba(111, 90, 51, 0.55); border-radius: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- keys panel (setup): current binds as kbd chips + capture flow ---- */
+.key-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.key-row > span:first-child { flex: 1; }
+kbd {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  background: var(--paper-deep);
+  border: 1px solid var(--ink-soft);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 2px 8px;
+  color: var(--ink);
+  min-width: 52px;
+  text-align: center;
+}
+button.key-change, button.key-reset { padding: 4px 10px; font-size: 0.8rem; }
+button.key-reset { margin-top: 8px; }
+
+/* Focus thread: last retro's experiment, riding along quietly. */
+.focus-line {
+  font-style: italic;
+  color: var(--gold-ink);
+  font-size: 0.92rem;
+  margin: 8px 0 0;
+}
+
+/* Looking back (story-shape retro): tagged noticings + one experiment. */
+.retro-line, .retro-next { margin: 8px 0; display: flex; gap: 10px; align-items: baseline; }
+.retro-tag { flex: 0 0 auto; min-width: 108px; }
+.retro-next { border-left: 3px solid var(--gold); padding-left: 10px; margin-left: -13px; }
+.retro-next > span:last-child { font-style: italic; color: var(--gold-ink); }
+
+/* Companion-presence control: three quiet options, chosen one gold. */
+.presence-row { display: flex; gap: 8px; }
+button.presence-opt { padding: 5px 14px; font-size: 0.85rem; }
+button.presence-opt.selected {
+  background: var(--gold);
+  color: var(--ink);
+  border-color: transparent;
+}
+.key-hint {
+  margin: 6px 0 0;
+  text-transform: none;
+  letter-spacing: 0;
+  font-style: italic;
+  min-height: 1em;
+}
+
+/* ---- recap listen-back: parchment player over a hidden <audio> ----
+   The native control is a white system pill that breaks the study; this
+   reuses the level-meter language (warm track, gold fill) instead. */
+.audio-bar { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.audio-play {
+  padding: 6px 14px;
+  font-size: 0.9rem;
+  line-height: 1;
+  min-width: 44px; /* ▶ and ❚❚ keep the button from changing width */
+}
+.audio-track {
+  flex: 1;
+  height: 10px;
+  background: var(--meter-bg);
+  border-radius: 5px;
+  overflow: hidden;
+  cursor: pointer;
+}
+.audio-track:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+.audio-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--gold), var(--ember));
+}
+.audio-time { margin: 0; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* ---- recap transcript: timestamped, click-to-seek ---- */
 .transcript-line {

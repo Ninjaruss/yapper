@@ -74,7 +74,8 @@ pub fn spawn_stt_worker(
                 // end_ms includes up to ~600ms trailing silence padding
                 // (the VAD's END_SILENCE_MS); acceptable for glanceable UI,
                 // revisit for edit markers in Plan 5.
-                let end_ms = utterance.start_ms + (utterance.samples.len() * 1000 / 16_000) as i64;
+                let end_ms = utterance.start_ms
+                    + (utterance.samples.len() * 1000 / crate::stt::SAMPLE_RATE_HZ) as i64;
                 match store.add_segment(session_id, utterance.start_ms, end_ms, &text) {
                     Ok(segment_id) => {
                         let segment = Segment {

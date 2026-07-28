@@ -22,7 +22,7 @@ use error::YapperError;
 use insight::worker::{InsightDeps, InsightEvent};
 use insight::InsightEngine;
 use session::{ClockState, SessionClock};
-use store::{Event, OutlineRow, Session, SessionStore, TranscriptSegment};
+use store::{Event, OutlineRow, RetroRow, Session, SessionStore, TranscriptSegment};
 use stt::{Segment, TranscribeEngine};
 
 /// Insight worker cadence in production (injectable for tests — see
@@ -168,7 +168,13 @@ async fn start_session(
     }
 
     let started = now_ms();
-    let id = state.store.create_session(started, &intent)?;
+    // Stamp the take with the experiment it carries in (the most recent
+    // retro's try_next) so the recap can echo it even after newer retros
+    // exist. Best-effort: a lookup failure must never block recording.
+    let focus = state.store.latest_try_next().unwrap_or(None);
+    let id = state
+        .store
+        .create_session_with_focus(started, &intent, focus.as_deref())?;
 
     let tee = engine
         .is_some()
@@ -695,6 +701,75 @@ fn models_ready(app: tauri::AppHandle) -> Result<ModelsReady, YapperError> {
 // Each `ensure_model` call short-circuits instantly if its model is already
 // present, so re-invoking this after a partial success (e.g. STT succeeded,
 // LLM failed) only re-downloads what's still missing.
+/// Cached story-shape retrospective for a session, if one was generated.
+#[tauri::command]
+fn get_retro(state: State<'_, AppState>, session_id: i64) -> Result<Option<RetroRow>, YapperError> {
+    state.store.get_retro(session_id)
+}
+
+/// The most recent retro's `try_next` — the focus the setup screen carries
+/// into the next take.
+#[tauri::command]
+fn latest_focus(state: State<'_, AppState>) -> Result<Option<String>, YapperError> {
+    state.store.latest_try_next()
+}
+
+/// Generates (or returns the cached) story-shape retrospective: one local-LLM
+/// pass over the whole transcript, per the Moth rubric (stakes / opening /
+/// landing) plus one `try_next` experiment. Runs on a blocking thread —
+/// model load takes seconds and must never freeze the webview. The row is
+/// only written on success, so a failed pass is retriable on the next
+/// recap open.
+#[tauri::command]
+async fn generate_retro(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: i64,
+) -> Result<RetroRow, YapperError> {
+    if let Some(existing) = state.store.get_retro(session_id)? {
+        return Ok(existing);
+    }
+
+    let store = state.store.clone();
+    let segments = store.list_segments(session_id)?;
+    if segments.is_empty() {
+        return Err(YapperError::State("no transcript to look back on".into()));
+    }
+    let intent = store
+        .list_sessions()?
+        .into_iter()
+        .find(|s| s.id == session_id)
+        .map(|s| s.intent)
+        .unwrap_or_default();
+    let lines: Vec<(i64, String)> = segments.into_iter().map(|s| (s.start_ms, s.text)).collect();
+
+    let model_dir = models::model_dir_for(&app, &models::LLM_MODEL)?;
+    if !models::model_present(&app, &models::LLM_MODEL) {
+        return Err(YapperError::State("thinking model not downloaded".into()));
+    }
+
+    let created_at = now_ms();
+    let retro = tauri::async_runtime::spawn_blocking(move || -> Result<RetroRow, YapperError> {
+        let mut engine = insight::llama::LlamaEngine::new(&model_dir)?;
+        let prompt = insight::prompt::build_retro_prompt(&intent, &lines);
+        let raw = engine.insight(&prompt)?;
+        let fields = insight::prompt::parse_retro(&raw)
+            .ok_or_else(|| YapperError::State("retro output unparseable".into()))?;
+        Ok(RetroRow {
+            session_id,
+            stakes: fields.stakes,
+            opening: fields.opening,
+            landing: fields.landing,
+            try_next: fields.try_next,
+        })
+    })
+    .await
+    .map_err(|e| YapperError::State(format!("retro task panicked: {e}")))??;
+
+    store.save_retro(&retro, created_at)?;
+    Ok(retro)
+}
+
 #[tauri::command]
 async fn ensure_models(app: tauri::AppHandle) -> Result<(), YapperError> {
     let stt_app = app.clone();
@@ -742,6 +817,17 @@ fn reveal_session(state: State<'_, AppState>, id: i64) -> Result<(), YapperError
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Dev-only: surface tauri-internal `log::error!` output (e.g. the asset
+    // protocol's "not configured to allow the path" denials, which are
+    // otherwise silently swallowed without a logger).
+    #[cfg(debug_assertions)]
+    {
+        let _ = env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or("error"),
+        )
+        .try_init();
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -769,6 +855,9 @@ pub fn run() {
             list_events,
             list_outline,
             set_event_feedback,
+            get_retro,
+            latest_focus,
+            generate_retro,
             models_ready,
             ensure_models,
             export_transcript

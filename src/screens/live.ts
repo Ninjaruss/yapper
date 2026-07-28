@@ -1,6 +1,10 @@
 import { ipc, type OutlineEntryUI, type Session } from "../ipc";
-import { escapeHtml } from "../escape";
 import { createWisp } from "../wisp";
+import { sinkGhosts, updateOutline } from "../outline";
+import { eventMatchesCombo, isTypingTarget, loadKeybinds } from "../keys";
+import { makePauseMark, needsPauseMark, renderSegmentLine } from "../transcript";
+import { loadPresence, shouldShowQuestion, shouldShowRhythm } from "../presence";
+import { fmtDuration } from "../format";
 
 const MAX_TRANSCRIPT_LINES = 40;
 const VOICE_LEVEL_THRESHOLD = 0.02;
@@ -13,6 +17,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
   root.innerHTML = `
     <div class="paper-panel" style="display:flex; align-items:center; gap:24px;">
       <div class="elapsed" id="elapsed">0:00</div>
+      <span id="chapter" class="chapter-title"></span>
       <div class="level-meter" style="flex:1"><div id="meter"></div></div>
       <button id="pause" class="quiet">Pause listening</button>
       <button id="end">End the talk</button>
@@ -49,9 +54,27 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
   const wisp = createWisp();
   root.querySelector<HTMLElement>("#wispRail")!.appendChild(wisp.el);
 
+  // Hotkeys (user-configurable on the setup screen): pause/resume and end
+  // the talk without hunting for a button mid-recording. Buttons' disabled
+  // state guards double-fires; typing targets never trigger binds.
+  const keybinds = loadKeybinds();
+  const endBtn = root.querySelector<HTMLButtonElement>("#end")!;
+  const onHotkey = (e: KeyboardEvent) => {
+    if (e.repeat || isTypingTarget(e.target)) return;
+    if (eventMatchesCombo(e, keybinds.pause)) {
+      e.preventDefault();
+      pauseBtn.click();
+    } else if (eventMatchesCombo(e, keybinds.startEnd)) {
+      e.preventDefault();
+      endBtn.click();
+    }
+  };
+  window.addEventListener("keydown", onHotkey);
+
   let paused = false;
   let ended = false;
   let lastVoiceAt = Date.now();
+  let anchoredLine: HTMLElement | null = null;
   const glowTimers = new Map<number, ReturnType<typeof setTimeout>>();
   let nullStatusCount = 0;
 
@@ -69,12 +92,17 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     }
   });
 
+  // Transcript lines render through transcript.ts: filler sounds as thinner
+  // ink, real silences as quiet `· · ·` dividers (speech-clock gap between
+  // consecutive segments).
+  let prevSegmentEndMs: number | null = null;
   let segmentUnlisten: (() => void) | null = null;
   ipc.onSegment((s) => {
-    transcriptEl.insertAdjacentHTML(
-      "beforeend",
-      `<p data-segment-id="${s.id}" style="margin:6px 0;">${escapeHtml(s.text)}</p>`,
-    );
+    if (needsPauseMark(prevSegmentEndMs, s.start_ms)) {
+      transcriptEl.appendChild(makePauseMark());
+    }
+    prevSegmentEndMs = s.end_ms;
+    transcriptEl.appendChild(renderSegmentLine(s));
     while (transcriptEl.children.length > MAX_TRANSCRIPT_LINES) {
       transcriptEl.removeChild(transcriptEl.firstElementChild!);
     }
@@ -87,8 +115,16 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     }
   });
 
+  // Presence gates: which live cues get DISPLAYED (Rust records them all
+  // regardless, so the recap is identical at any level).
+  const presence = loadPresence();
+  let lastRhythmShownAt: number | null = null;
+  let lastQuestionShownAt: number | null = null;
+
   let signalUnlisten: (() => void) | null = null;
   ipc.onSignal((sig) => {
+    if (!shouldShowRhythm(presence, lastRhythmShownAt, Date.now())) return;
+    lastRhythmShownAt = Date.now();
     wisp.marginNote(sig.note);
     if (sig.kind === "repetition") {
       wisp.setState("repeat");
@@ -121,35 +157,37 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     }
   });
 
-  // Outline rendering uses textContent (not innerHTML) throughout: labels
-  // are LLM-derived and can echo raw spoken words, so they must never be
-  // parsed as markup — same discipline as the transcript's escapeHtml.
+  // Outline rendering lives in outline.ts (incremental, keyed by label;
+  // textContent only — labels are LLM-derived and never parsed as markup).
   let latestOutline: OutlineEntryUI[] = [];
   let currentOutlineP: HTMLElement | null = null;
-  function rebuildOutline(entries: OutlineEntryUI[]) {
-    latestOutline = entries;
-    outlineEl.innerHTML = "";
-    currentOutlineP = null;
-    for (const entry of entries) {
-      const p = document.createElement("p");
-      if (entry.status === "covered") {
-        p.className = "outline-covered";
-        p.textContent = entry.label;
-      } else if (entry.status === "current") {
-        p.className = "outline-current";
-        p.textContent = `✎ ${entry.label}`;
-        currentOutlineP = p;
-      } else {
-        p.className = "outline-intent";
-        p.textContent = `◌ ${entry.label}`;
-      }
-      outlineEl.appendChild(p);
-    }
-  }
+
+  // The header names the current chapter (spec: "chapter title auto-derived
+  // from current topic") — a glance says where you are without reading the
+  // outline. Empty until the insight engine finds a current topic.
+  const chapterEl = root.querySelector<HTMLElement>("#chapter")!;
+
+  // Time-in-topic: a quiet "N min" beside the current line once you've
+  // been on one topic a while — pacing awareness, not a timer. Tracked on
+  // the speech clock (status.elapsed_ms), reset when the topic changes.
+  const TOPIC_TIME_AFTER_MS = 180_000;
+  let latestElapsedMs = 0;
+  let currentTopicLabel: string | null = null;
+  let currentTopicSinceMs = 0;
+  let topicTimeSpan: HTMLElement | null = null;
 
   let outlineUnlisten: (() => void) | null = null;
   ipc.onOutline((entries) => {
-    rebuildOutline(entries);
+    latestOutline = entries;
+    currentOutlineP = updateOutline(outlineEl, sinkGhosts(entries));
+    const current = entries.find((e) => e.status === "current")?.label ?? "";
+    chapterEl.textContent = current;
+    if (current !== currentTopicLabel) {
+      currentTopicLabel = current || null;
+      currentTopicSinceMs = latestElapsedMs;
+      topicTimeSpan?.remove();
+      topicTimeSpan = null;
+    }
   }).then((fn) => {
     if (ended) {
       fn();
@@ -160,10 +198,17 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
 
   let questionUnlisten: (() => void) | null = null;
   ipc.onQuestion((question) => {
+    if (!shouldShowQuestion(presence, lastQuestionShownAt, Date.now())) return;
+    lastQuestionShownAt = Date.now();
     wonderingLabelEl.textContent = "Wondering";
     wonderingLabelEl.style.display = "";
+    wonderingEl.classList.remove("chip-callback", "chip-arriving");
+    // Force a reflow so re-adding the class restarts the CSS animation
+    // even when two questions arrive back to back.
+    void wonderingEl.offsetWidth;
     wonderingEl.textContent = question;
     wonderingEl.style.display = "";
+    wonderingEl.classList.add("chip-arriving");
     wisp.setState("wondering");
   }).then((fn) => {
     if (ended) {
@@ -206,6 +251,8 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     wonderingLabelEl.style.display = "";
     wonderingEl.textContent = worthCallingBack;
     wonderingEl.style.display = "";
+    wonderingEl.classList.remove("chip-arriving");
+    wonderingEl.classList.add("chip-callback");
   }).then((fn) => {
     if (ended) {
       fn();
@@ -244,17 +291,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
             }
             // Run cleanup exactly once before calling onEnded
             ended = true;
-            unlisten?.();
-            segmentUnlisten?.();
-            signalUnlisten?.();
-            outlineUnlisten?.();
-            questionUnlisten?.();
-            shineUnlisten?.();
-            wrapupUnlisten?.();
-            if (shineUnderlineTimer !== undefined) clearTimeout(shineUnderlineTimer);
-            for (const t of glowTimers.values()) clearTimeout(t);
-            glowTimers.clear();
-            wisp.destroy();
+            cleanup();
             // Now run the recap flow with the recovered session
             onEnded(last);
           } catch (e) {
@@ -268,8 +305,24 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     }
     // Reset counter on any non-null status
     nullStatusCount = 0;
-    const total = Math.floor(status.elapsed_ms / 1000);
-    elapsedEl.textContent = `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+    latestElapsedMs = status.elapsed_ms;
+    elapsedEl.textContent = fmtDuration(status.elapsed_ms);
+
+    // Quiet time-in-topic marker on the current outline line.
+    if (
+      currentTopicLabel &&
+      currentOutlineP &&
+      latestElapsedMs - currentTopicSinceMs >= TOPIC_TIME_AFTER_MS
+    ) {
+      if (topicTimeSpan === null || topicTimeSpan.parentElement !== currentOutlineP) {
+        topicTimeSpan?.remove();
+        topicTimeSpan = document.createElement("span");
+        topicTimeSpan.className = "topic-time";
+        currentOutlineP.appendChild(topicTimeSpan);
+      }
+      const mins = Math.floor((latestElapsedMs - currentTopicSinceMs) / 60_000);
+      topicTimeSpan.textContent = `${mins} min`;
+    }
     if (status.writer_failed) {
       stateEl.textContent = "trouble writing audio to disk — end the talk to keep what's saved";
     }
@@ -287,12 +340,12 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     }
     if (status.insight_active && latestOutline.length === 0 && outlineEl.children.length === 0) {
       const p = document.createElement("p");
-      p.className = "outline-intent";
+      p.className = "outline-note";
       p.textContent = "listening for the shape of it…";
       outlineEl.appendChild(p);
     } else if (!status.insight_active && latestOutline.length === 0 && outlineEl.children.length === 0) {
       const p = document.createElement("p");
-      p.className = "outline-intent";
+      p.className = "outline-note";
       p.textContent = "the thinking model is off — mirror only";
       outlineEl.appendChild(p);
     }
@@ -301,12 +354,46 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
       const idle = Date.now() - lastVoiceAt;
       if (idle < FLOWING_WITHIN_MS) {
         wisp.setState("flowing");
+        // Speaking again: the lost-thread anchor lets go.
+        anchoredLine?.classList.remove("thread-anchor");
+        anchoredLine = null;
       } else if (idle >= THINKING_AFTER_MS) {
         wisp.setState("thinking");
+        // Lost-thread anchor: while you're thinking, the last thing you
+        // said gently emphasizes — the mirror answers "where was I?"
+        // exactly when you're asking it.
+        const lines = transcriptEl.querySelectorAll<HTMLElement>("p[data-segment-id]");
+        const last = lines[lines.length - 1];
+        if (last && last !== anchoredLine) {
+          anchoredLine?.classList.remove("thread-anchor");
+          anchoredLine = last;
+          last.classList.add("thread-anchor");
+        }
       }
       // Between the two thresholds: leave the current state as-is.
     }
   }, 500);
+
+  // Single teardown for every path that leaves the live screen (End, and
+  // the null-status recovery button). Stops the poll timer, drops all
+  // backend listeners, clears pending glow/shine timers, and tears down the
+  // wisp + hotkeys. Idempotent on the timer (clearInterval twice is safe).
+  // Callers set `ended` and call onEnded() themselves.
+  const cleanup = () => {
+    clearInterval(timer);
+    unlisten?.();
+    segmentUnlisten?.();
+    signalUnlisten?.();
+    outlineUnlisten?.();
+    questionUnlisten?.();
+    shineUnlisten?.();
+    wrapupUnlisten?.();
+    if (shineUnderlineTimer !== undefined) clearTimeout(shineUnderlineTimer);
+    for (const t of glowTimers.values()) clearTimeout(t);
+    glowTimers.clear();
+    wisp.destroy();
+    window.removeEventListener("keydown", onHotkey);
+  };
 
   pauseBtn.onclick = async () => {
     pauseBtn.disabled = true;
@@ -332,7 +419,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     }
   };
 
-  root.querySelector<HTMLButtonElement>("#end")!.onclick = async () => {
+  endBtn.onclick = async () => {
     if (ended) return;
     let endedSession: Session;
     try {
@@ -347,18 +434,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
       return;
     }
     ended = true;
-    clearInterval(timer);
-    unlisten?.();
-    segmentUnlisten?.();
-    signalUnlisten?.();
-    outlineUnlisten?.();
-    questionUnlisten?.();
-    shineUnlisten?.();
-    wrapupUnlisten?.();
-    if (shineUnderlineTimer !== undefined) clearTimeout(shineUnderlineTimer);
-    for (const t of glowTimers.values()) clearTimeout(t);
-    glowTimers.clear();
-    wisp.destroy();
+    cleanup();
     onEnded(endedSession);
   };
 }

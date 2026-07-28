@@ -19,12 +19,16 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' asset: http://asset.localhost",
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob: asset: http://asset.localhost; connect-src 'self' asset: http://asset.localhost",
       "assetProtocol": {
         "enable": true,
         "scope": [
           "$AUDIO/Yapper/**",
-          "$APPDATA/audio/**"
+          "$AUDIO/Yapper/**/*",
+          "$AUDIO/Yapper/*",
+          "$APPDATA/audio/**",
+          "$APPDATA/audio/**/*",
+          "$APPDATA/audio/*"
         ]
       }
     }
@@ -38,6 +42,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
   }
 }

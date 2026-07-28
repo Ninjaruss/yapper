@@ -16,6 +16,7 @@ export interface Session {
   paused_ms: number;
   filler_count: number | null;
   word_count: number | null;
+  focus: string | null;
   audio_exists: boolean;
   segment_count: number;
 }
@@ -80,6 +81,14 @@ export interface OutlineEntryUI {
   status: "covered" | "current" | "intent_untouched";
 }
 
+export interface Retro {
+  session_id: number;
+  stakes: string | null;
+  opening: string | null;
+  landing: string | null;
+  try_next: string;
+}
+
 export interface OutlineRow extends OutlineEntryUI {
   id: number;
   session_id: number;
@@ -105,6 +114,9 @@ export const ipc = {
   ensureModels: () => invoke<void>("ensure_models"),
   exportTranscript: (id: number) => invoke<string>("export_transcript", { id }),
   listOutline: (sessionId: number) => invoke<OutlineRow[]>("list_outline", { sessionId }),
+  getRetro: (sessionId: number) => invoke<Retro | null>("get_retro", { sessionId }),
+  generateRetro: (sessionId: number) => invoke<Retro>("generate_retro", { sessionId }),
+  latestFocus: () => invoke<string | null>("latest_focus"),
   setEventFeedback: (id: number, feedback: string) =>
     invoke<void>("set_event_feedback", { eventId: id, feedback }),
   onLevel: (cb: (level: number) => void): Promise<UnlistenFn> =>

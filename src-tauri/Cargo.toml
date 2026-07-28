@@ -33,7 +33,8 @@ reqwest = { version = "0.12", features = ["blocking"] }
 tar = "0.4"
 bzip2 = "0.5"
 encoding_rs = "0.8"
-flacenc = "0.5.1"
+env_logger = "0.11"
+claxon = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
@@ -52,4 +53,14 @@ llama-cpp-2 = { version = "=0.1.152" }
 [[example]]
 name = "insight_spike"
 path = "examples/insight_spike.rs"
+
+[[example]]
+name = "insight_replay"
+path = "examples/insight_replay.rs"
+
+# Keep debug builds small: heavy native deps (llama.cpp, onnxruntime) emit
+# gigabytes of full debuginfo we never need. Line tables keep backtraces useful.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
 

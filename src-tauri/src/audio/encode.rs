@@ -1,12 +1,18 @@
-//! Post-session lossless compression: WAV → FLAC via the pure-Rust
-//! `flacenc` crate. Called from `lib.rs`'s `end_session` on a detached
-//! thread after the take is safely in the DB — a failure here just leaves
-//! the WAV in place (see the call site for why that's fine).
+//! Post-session lossless compression: WAV → FLAC via the PLATFORM encoder
+//! (`afconvert` on macOS, the `flac` CLI elsewhere). Called from `lib.rs`'s
+//! `end_session` on a detached thread after the take is safely in the DB —
+//! a failure here just leaves the WAV in place.
+//!
+//! Why not a Rust encoder crate: `flacenc` output decoded fine with lenient
+//! decoders (claxon) but CoreAudio — the decoder WKWebView actually uses
+//! for playback — rejected every file it produced (ExtAudioFileRead -50).
+//! Encoding with the platform's own toolchain keeps encoder and player from
+//! the same vendor. And the WAV is only ever deleted after the FLAC has
+//! been FULLY DECODED back and its sample count matched — magic-bytes
+//! checks let a malformed stream through once; never again.
 
 use std::path::{Path, PathBuf};
-
-use flacenc::component::BitRepr;
-use flacenc::error::Verify;
+use std::process::Command;
 
 use crate::error::YapperError;
 
@@ -29,64 +35,120 @@ pub fn wav_to_flac(wav: &Path) -> Result<PathBuf, YapperError> {
         return Err(e);
     }
 
-    // Verify before touching the WAV: exists, non-empty, starts with the
-    // FLAC magic bytes ("fLaC"). Anything else means encode_to lied about
-    // success (or the write was corrupted) and the WAV must be preserved.
-    match std::fs::read(&flac_path) {
-        Ok(bytes) if bytes.len() >= FLAC_MAGIC.len() && bytes[..FLAC_MAGIC.len()] == *FLAC_MAGIC => {}
-        Ok(_) => {
-            let _ = std::fs::remove_file(&flac_path);
-            return Err(YapperError::Audio(
-                "flac output failed verification (missing magic bytes)".into(),
-            ));
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(&flac_path);
-            return Err(YapperError::Io(e));
-        }
+    // Verify before touching the WAV: the FLAC must exist, carry the magic,
+    // AND fully decode (claxon) to exactly the source's sample count. Only
+    // a proven-playable file earns the right to replace the recording.
+    if let Err(e) = verify_flac_against_wav(&flac_path, wav) {
+        let _ = std::fs::remove_file(&flac_path);
+        return Err(e);
     }
 
     std::fs::remove_file(wav)?;
     Ok(flac_path)
 }
 
+fn verify_flac_against_wav(flac_path: &Path, wav: &Path) -> Result<(), YapperError> {
+    let bytes = std::fs::read(flac_path)?;
+    if bytes.len() < FLAC_MAGIC.len() || bytes[..FLAC_MAGIC.len()] != *FLAC_MAGIC {
+        return Err(YapperError::Audio(
+            "flac output failed verification (missing magic bytes)".into(),
+        ));
+    }
+    let source_samples = hound::WavReader::open(wav)
+        .map_err(|e| YapperError::Audio(format!("could not reopen wav for verify: {e}")))?
+        .len() as u64;
+    let mut reader = claxon::FlacReader::open(flac_path)
+        .map_err(|e| YapperError::Audio(format!("flac verify: unreadable stream: {e}")))?;
+    let mut decoded: u64 = 0;
+    for s in reader.samples() {
+        s.map_err(|e| YapperError::Audio(format!("flac verify: decode error: {e}")))?;
+        decoded += 1;
+    }
+    if decoded != source_samples {
+        return Err(YapperError::Audio(format!(
+            "flac verify: decoded {decoded} samples, wav has {source_samples}"
+        )));
+    }
+    Ok(())
+}
+
 /// Read `wav`, encode it, and write the result to `flac_path`. Isolated
 /// from `wav_to_flac` so every early-return in here funnels through one
 /// cleanup path (the partial-file removal above) instead of duplicating it.
 fn encode_to(wav: &Path, flac_path: &Path) -> Result<(), YapperError> {
-    let mut reader = hound::WavReader::open(wav)
+    // The wav must at least open as one (clear error before shelling out).
+    hound::WavReader::open(wav)
         .map_err(|e| YapperError::Audio(format!("could not open wav {wav:?}: {e}")))?;
-    let spec = reader.spec();
-    let samples: Vec<i32> = reader
-        .samples::<i16>()
-        .map(|s| s.map(i32::from))
-        .collect::<Result<_, _>>()
-        .map_err(|e| YapperError::Audio(format!("could not read wav samples: {e}")))?;
+    // Platform tools refuse-or-vary on pre-existing outputs; start clean.
+    let _ = std::fs::remove_file(flac_path);
 
-    let config = flacenc::config::Encoder::default()
-        .into_verified()
-        .map_err(|(_, e)| YapperError::Audio(format!("invalid flac encoder config: {e}")))?;
-    let source = flacenc::source::MemSource::from_samples(
-        &samples,
-        spec.channels as usize,
-        spec.bits_per_sample as usize,
-        spec.sample_rate as usize,
-    );
-    let stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size)
-        .map_err(|e| YapperError::Audio(format!("flac encode failed: {e}")))?;
+    #[cfg(target_os = "macos")]
+    let output = Command::new("afconvert")
+        .arg(wav)
+        .arg("-o")
+        .arg(flac_path)
+        .args(["-f", "flac", "-d", "flac"])
+        .output()
+        .map_err(|e| YapperError::Audio(format!("could not run afconvert: {e}")))?;
 
-    let mut sink = flacenc::bitsink::ByteSink::new();
-    stream
-        .write(&mut sink)
-        .map_err(|e| YapperError::Audio(format!("flac bitstream write failed: {e}")))?;
+    #[cfg(not(target_os = "macos"))]
+    let output = Command::new("flac")
+        .args(["--silent", "--force", "-o"])
+        .arg(flac_path)
+        .arg(wav)
+        .output()
+        .map_err(|e| {
+            YapperError::Audio(format!(
+                "could not run flac (install the `flac` package to enable compression): {e}"
+            ))
+        })?;
 
-    std::fs::write(flac_path, sink.as_slice())?;
+    if !output.status.success() {
+        return Err(YapperError::Audio(format!(
+            "flac encode failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Round-trip: what we encode must DECODE — with a real FLAC decoder —
+    // back to the exact samples. Magic-bytes checks let a malformed stream
+    // through once; never again.
+    #[test]
+    fn flac_roundtrip_decodes_to_identical_samples() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("rt.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(&wav_path, spec).unwrap();
+        let original: Vec<i16> = (0..16_000)
+            .map(|i| ((i as f32 / 16_000.0 * std::f32::consts::TAU * 220.0).sin() * 12000.0) as i16)
+            .collect();
+        for s in &original {
+            w.write_sample(*s).unwrap();
+        }
+        w.finalize().unwrap();
+
+        let flac = wav_to_flac(&wav_path).expect("encode");
+        let mut reader = claxon::FlacReader::open(&flac).expect("claxon must open our flac");
+        let decoded: Vec<i32> = reader
+            .samples()
+            .map(|s| s.expect("claxon decode"))
+            .collect();
+        assert_eq!(decoded.len(), original.len(), "sample count mismatch");
+        for (i, (d, o)) in decoded.iter().zip(original.iter()).enumerate() {
+            assert_eq!(*d, i32::from(*o), "sample {i} differs");
+        }
+    }
 
     /// Write a 1s 16kHz mono sine WAV (16-bit PCM) to `path`.
     fn write_sine_wav(path: &Path, sample_rate: u32, seconds: f32) {
