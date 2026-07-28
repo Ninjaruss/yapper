@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Yapper — a quiet desk for practicing talks out loud</title>
+<meta name="description" content="Yapper is a local-first Mac app for practicing talks out loud. Set an intent, talk, and a quiet companion mirrors the shape of it — everything runs on your machine, nothing is uploaded." />
+<meta property="og:title" content="Yapper" />
+<meta property="og:description" content="A quiet desk for practicing talks out loud. Local-first, private, no account." />
+<meta property="og:type" content="website" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%232b2114'/%3E%3Cpath d='M40 78 Q30 55 46 38 Q54 29 55 16 Q62 30 74 40 Q88 54 82 70 Q76 84 55 86 Q46 84 40 78 Z' fill='%23ffcf24'/%3E%3Cpath d='M48 72 Q42 54 52 40 Q56 34 57 28 Q62 38 68 46 Q76 58 70 70 Q66 78 57 78 Q51 78 48 72 Z' fill='%23fff6c8'/%3E%3C/svg%3E" />
+<style>
+  :root{
+    --desk:#2b2114; --desk-glow:#4a3a24; --desk-deep:#17110a;
+    --paper:#f2e6c8; --paper-deep:#e6d5ac; --paper-edge:#d8c49a;
+    --ink:#4a3c26; --ink-soft:#6f5a33; --parchment-dim:#b8a67e;
+    --gold:#d9a92e; --gold-bright:#ffe52c; --gold-ink:#6b4f0f;
+    --ember:#e8912c; --ember-ink:#8a4a12;
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+    --mono:ui-monospace,"SF Mono",Menlo,"Cascadia Mono",monospace;
+  }
+  *{box-sizing:border-box;}
+  html{-webkit-text-size-adjust:100%;}
+  body{
+    margin:0; min-height:100vh; color:var(--ink); font-family:var(--serif);
+    font-size:18px; line-height:1.65; letter-spacing:.005em;
+    background:
+      radial-gradient(120% 90% at 72% 42%, rgba(255,214,90,.10), transparent 46%),
+      radial-gradient(ellipse at 68% 46%, var(--desk-glow), var(--desk) 52%, var(--desk-deep));
+    background-attachment:fixed;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* faint paper-grain over the whole desk for atmosphere */
+  body::before{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:0; opacity:.05;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .desk{position:relative; z-index:1; max-width:940px; margin:0 auto; padding:7vh 24px 40px;}
+
+  /* the sheet of paper on the desk */
+  .sheet{
+    position:relative; max-width:660px; margin:0 auto;
+    background:linear-gradient(158deg, var(--paper), var(--paper-deep));
+    border-radius:2px; padding:52px 56px 44px;
+    box-shadow:0 2px 0 var(--paper-edge), 0 24px 60px -12px rgba(0,0,0,.6), 0 8px 20px rgba(0,0,0,.35);
+  }
+  /* candle light spilling across the top of the sheet */
+  .sheet::before{
+    content:""; position:absolute; inset:0; border-radius:2px; pointer-events:none;
+    background:radial-gradient(80% 60% at 78% -8%, rgba(255,224,120,.22), transparent 60%);
+    mix-blend-mode:soft-light;
+  }
+  .sheet > *{position:relative;}
+
+  header{display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:30px;}
+  .wordmark{
+    font-size:1.5rem; letter-spacing:.30em; text-transform:uppercase; font-weight:600;
+    color:var(--gold-ink); margin:6px 0 0;
+  }
+  .label{
+    font-family:var(--mono); font-size:.64rem; letter-spacing:.24em; text-transform:uppercase;
+    color:var(--ink-soft); margin:0;
+  }
+
+  .tagline{
+    font-size:2rem; line-height:1.18; font-style:italic; color:var(--ink);
+    margin:0 0 20px; max-width:15ch; text-wrap:balance;
+  }
+  .lede{margin:0 0 34px; color:var(--ink-soft); font-size:1.06rem;}
+  .lede b{color:var(--ink); font-weight:600; font-style:normal;}
+
+  /* the app's own outline grammar, reused as the feature list */
+  .shape{margin:0 0 32px;}
+  .shape .label{margin-bottom:12px;}
+  .moment{display:flex; gap:12px; align-items:baseline; margin:11px 0;}
+  .moment .tick{color:var(--gold-ink); opacity:.7; flex:0 0 auto; font-size:.95rem; line-height:1.5;}
+  .moment .m-body{margin:0;}
+  .moment .m-title{font-weight:600; color:var(--ink);}
+  .moment .m-gloss{color:var(--ink-soft);}
+
+  /* private-by-design note — the app's ember-spined chip */
+  .note{
+    background:var(--paper-deep); border-left:3px solid var(--ember);
+    border-radius:2px; padding:12px 16px; margin:0 0 36px;
+    font-style:italic; color:var(--ink); font-size:.98rem;
+  }
+  .note b{font-style:normal; color:var(--ember-ink);}
+
+  .get{margin:0 0 6px;}
+  .btn{
+    display:inline-block; font-family:var(--serif); font-size:1.05rem; font-weight:600;
+    background:var(--gold); color:#3a2f14; text-decoration:none;
+    padding:13px 28px; border-radius:2px; border:1px solid rgba(90,66,20,.25);
+    box-shadow:0 3px 0 rgba(90,66,20,.28), 0 6px 16px rgba(0,0,0,.2);
+    transition:transform .12s ease, background .18s ease, box-shadow .12s ease;
+  }
+  .btn:hover{background:var(--gold-bright); transform:translateY(-1px); box-shadow:0 4px 0 rgba(90,66,20,.28), 0 9px 20px rgba(0,0,0,.25);}
+  .btn:active{transform:translateY(1px); box-shadow:0 2px 0 rgba(90,66,20,.28);}
+  .btn:focus-visible{outline:2px solid var(--gold-ink); outline-offset:3px;}
+  .specs{font-family:var(--mono); font-size:.72rem; letter-spacing:.04em; color:var(--ink-soft); margin:14px 0 0;}
+
+  .firstrun{margin:16px 0 0; font-size:.9rem; color:var(--ink-soft);}
+  .firstrun code{
+    font-family:var(--mono); font-size:.8rem; background:rgba(90,66,20,.10);
+    border:1px solid rgba(90,66,20,.16); border-radius:3px; padding:2px 7px; color:var(--gold-ink);
+    white-space:nowrap;
+  }
+
+  footer{
+    max-width:660px; margin:26px auto 0; padding:0 4px;
+    font-family:var(--mono); font-size:.72rem; letter-spacing:.06em; color:var(--parchment-dim);
+    display:flex; flex-wrap:wrap; gap:6px 18px; align-items:center; justify-content:space-between;
+  }
+  footer a{color:var(--parchment-dim); text-decoration:none; border-bottom:1px solid rgba(184,166,126,.35);}
+  footer a:hover{color:var(--gold); border-bottom-color:var(--gold);}
+  footer .made{font-style:italic; font-family:var(--serif); font-size:.85rem; letter-spacing:0;}
+
+  /* the wisp — sitting at the desk's edge, glowing */
+  .wisp{width:96px; height:auto; flex:0 0 auto; margin:-6px -6px 0 0;}
+  .wisp .aura{transform-origin:150px 185px;}
+  .wisp .inner{transform-origin:151px 190px;}
+
+  @media (prefers-reduced-motion:no-preference){
+    .wisp .aura{animation:pulse 3.6s ease-in-out infinite;}
+    .wisp .inner{animation:flick 1.4s ease-in-out infinite;}
+    .sheet > *{opacity:0; transform:translateY(8px); animation:rise .7s cubic-bezier(.2,.7,.3,1) forwards;}
+    header{animation-delay:.02s;} .tagline{animation-delay:.10s;} .lede{animation-delay:.18s;}
+    .shape{animation-delay:.26s;} .note{animation-delay:.34s;} .get{animation-delay:.42s;}
+    .firstrun{animation-delay:.48s;}
+    @keyframes rise{to{opacity:1; transform:none;}}
+    @keyframes pulse{0%,100%{opacity:.5;} 50%{opacity:.95;}}
+    @keyframes flick{0%,100%{opacity:.97; transform:scaleY(1);} 45%{opacity:1; transform:scaleY(1.04);} 70%{opacity:.9; transform:scaleY(.98);}}
+  }
+
+  @media (max-width:640px){
+    body{font-size:17px;}
+    .desk{padding:5vh 16px 32px;}
+    .sheet{padding:36px 28px 34px;}
+    .tagline{font-size:1.6rem;}
+    .wisp{width:76px;}
+    footer{justify-content:flex-start;}
+  }
+</style>
+</head>
+<body>
+  <main class="desk">
+    <section class="sheet">
+      <header>
+        <div>
+          <p class="label">a local-first mac app</p>
+          <h1 class="wordmark">Yapper</h1>
+        </div>
+        <svg class="wisp" viewBox="98 58 104 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+          <defs>
+            <radialGradient id="au" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#e8912c" stop-opacity=".45"/>
+              <stop offset="55%" stop-color="#e8912c" stop-opacity=".12"/>
+              <stop offset="100%" stop-color="#e8912c" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <circle class="aura" cx="150" cy="185" r="72" fill="url(#au)"/>
+          <path d="M114 232 Q102 186 128 148 Q140 132 143 108 Q152 128 172 140 Q200 158 192 204 Q185 244 150 248 Q124 246 114 232 Z" fill="#ffe52c" opacity=".5" stroke="#1a1408" stroke-width="2.5" stroke-linejoin="round"/>
+          <path d="M130 222 Q122 186 142 158 Q148 150 150 138 Q156 152 168 162 Q184 178 178 208 Q172 232 150 235 Q136 233 130 222 Z" fill="#ffcf24" opacity=".85"/>
+          <path class="inner" d="M138 214 Q133 188 146 168 Q150 162 151 154 Q156 164 163 172 Q172 184 168 204 Q164 220 151 222 Q142 220 138 214 Z" fill="#fff6c8" opacity=".97"/>
+          <path d="M134 114 Q130 94 145 80 Q157 69 172 75 Q160 77 151 88 Q142 99 150 112 Q142 120 134 114 Z" fill="#ffe52c" opacity=".55" stroke="#1a1408" stroke-width="2.2" stroke-linejoin="round"/>
+          <path d="M138 188 q5 -4 10 0" fill="none" stroke="#3a3226" stroke-width="3.4" stroke-linecap="round"/>
+          <path d="M154 187 q5 -4 10 0" fill="none" stroke="#3a3226" stroke-width="3.4" stroke-linecap="round"/>
+        </svg>
+      </header>
+
+      <h2 class="tagline">A quiet desk for practicing talks out loud.</h2>
+
+      <p class="lede">
+        Set what you mean to say. Then just talk. A small companion listens — mirroring
+        the shape of it as you go, and keeping a recording you can sit with afterward.
+        <b>Everything runs on your Mac. Nothing is uploaded, and there is no account.</b>
+      </p>
+
+      <div class="shape">
+        <p class="label">the shape of it</p>
+        <div class="moment">
+          <span class="tick">✓</span>
+          <p class="m-body"><span class="m-title">At the desk.</span>
+            <span class="m-gloss"> Jot an intent — a title, or paste your whole notes — pick a mic, and begin.</span></p>
+        </div>
+        <div class="moment">
+          <span class="tick">✓</span>
+          <p class="m-body"><span class="m-title">While you talk.</span>
+            <span class="m-gloss"> A living outline of where you've been, a gentle mark when you circle back, a recording running underneath.</span></p>
+        </div>
+        <div class="moment">
+          <span class="tick">✓</span>
+          <p class="m-body"><span class="m-title">Looking back.</span>
+            <span class="m-gloss"> Listen again, read the transcript, and see the story-shape — where it opened, where it landed — with one thing to try next time.</span></p>
+        </div>
+      </div>
+
+      <p class="note">
+        <b>Local by design.</b> The listening model and the thinking model both live on your
+        machine. After a one-time download, Yapper works fully offline — your voice never leaves the desk.
+      </p>
+
+      <div class="get">
+        <a class="btn" href="https://github.com/Ninjaruss/yapper/releases/download/v0.1.0/Yapper_0.1.0_universal.dmg">Download for macOS</a>
+        <p class="specs">universal · intel &amp; apple silicon · macOS 10.15+ · free, no account</p>
+      </div>
+      <p class="firstrun">
+        Not notarized yet, so on first open run this once:
+        <code>xattr -dr com.apple.quarantine /Applications/Yapper.app</code>
+      </p>
+    </section>
+
+    <footer>
+      <span class="made">Made on a desk lit by a candle.</span>
+      <span>
+        <a href="https://github.com/Ninjaruss/yapper">source</a> ·
+        <a href="https://github.com/Ninjaruss/yapper/releases/tag/v0.1.0">release v0.1.0</a>
+      </span>
+    </footer>
+  </main>
+</body>
+</html>
