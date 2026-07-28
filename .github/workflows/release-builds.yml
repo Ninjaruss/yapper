@@ -53,6 +53,7 @@ jobs:
             librsvg2-dev \
             libasound2-dev \
             libgtk-3-dev \
+            libfuse2 \
             patchelf \
             build-essential curl wget file libssl-dev libxdo-dev
 
@@ -65,10 +66,10 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust build (llama.cpp / sherpa are slow to compile)
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "src-tauri -> target"
+      # No Rust cache on purpose: sherpa/llama download prebuilt native libs
+      # into out-of-tree dirs the cache doesn't capture, so a warm cache
+      # restores a target/ that then fails to link ("cannot open cargs.lib").
+      # These are infrequent release builds — a clean compile is worth it.
 
       - name: Install frontend dependencies
         run: npm ci
