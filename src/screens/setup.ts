@@ -4,6 +4,8 @@ import { fmtDate, fmtDuration } from "../format";
 import { createWisp } from "../wisp";
 import { createDisclosure } from "../disclosure";
 import { createOverflowMenu } from "../overflow";
+import { autoUpdateEnabled, setAutoUpdate, currentVersion, checkForUpdate, installAndRelaunch } from "../updater";
+import type { Update } from "@tauri-apps/plugin-updater";
 import { PRESENCE_HINTS, loadPresence, savePresence, type Presence } from "../presence";
 import {
   DEFAULT_KEYBINDS,
@@ -47,6 +49,7 @@ export function renderSetup(
   // single collapsed Settings disclosure built below.
   root.innerHTML = `
     <h1 class="setup-wordmark">Yapper</h1>
+    <div id="updateBanner"></div>
     <div class="setup-top">
       <div class="paper-panel setup-hero">
       <div class="label">Microphone</div>
@@ -91,6 +94,21 @@ export function renderSetup(
     <div class="settings-group" id="trendGroup" style="display:none;">
       <div class="label">Over time</div>
       <div id="trend"></div>
+    </div>
+    <div class="settings-group">
+      <div class="label">Updates</div>
+      <div class="key-row">
+        <span>Automatically check for updates</span>
+        <span class="seg" role="radiogroup" aria-label="auto-update">
+          <button class="quiet upd-opt" data-auto="on" role="radio">on</button>
+          <button class="quiet upd-opt" data-auto="off" role="radio">off</button>
+        </span>
+      </div>
+      <div class="key-row">
+        <span id="versionLine">Current version …</span>
+        <button class="quiet" id="checkUpdateBtn">Check now</button>
+      </div>
+      <p class="label key-hint" id="updateHint"></p>
     </div>
   `;
   root.querySelector<HTMLElement>("#settings")!.appendChild(settings.el);
@@ -543,6 +561,69 @@ export function renderSetup(
       next.focus();
     };
   });
+
+  // ---- Updates: auto-check on launch (toggled here), manual "Check now", and
+  // an "update available" banner with one-click download + install + relaunch.
+  // All best-effort — a failed/absent check just leaves the desk as-is. ----
+  const updateBannerEl = root.querySelector<HTMLElement>("#updateBanner")!;
+  const updHintEl = root.querySelector<HTMLElement>("#updateHint")!;
+  const versionLineEl = root.querySelector<HTMLElement>("#versionLine")!;
+  const autoButtons = root.querySelectorAll<HTMLButtonElement>("button.upd-opt");
+  currentVersion().then((v) => {
+    versionLineEl.textContent = v ? `Current version ${v}` : "Current version —";
+  });
+  const renderAuto = () => {
+    const on = autoUpdateEnabled();
+    autoButtons.forEach((b) => {
+      const active = (b.dataset.auto === "on") === on;
+      b.classList.toggle("selected", active);
+      b.setAttribute("aria-checked", String(active));
+    });
+  };
+  renderAuto();
+  autoButtons.forEach((b) => {
+    b.onclick = () => {
+      setAutoUpdate(b.dataset.auto === "on");
+      renderAuto();
+    };
+  });
+
+  const showUpdate = (update: Update) => {
+    updateBannerEl.innerHTML = "";
+    const panel = document.createElement("div");
+    panel.className = "paper-panel update-banner";
+    const text = document.createElement("span");
+    text.className = "update-text";
+    text.textContent = `Yapper ${update.version} is ready`;
+    const btn = document.createElement("button");
+    btn.textContent = "Update & restart";
+    btn.onclick = () => {
+      btn.disabled = true;
+      btn.textContent = "Downloading…";
+      installAndRelaunch(update, (done, total) => {
+        btn.textContent = total ? `Downloading… ${Math.round((done / total) * 100)}%` : "Downloading…";
+      }).catch((e) => {
+        btn.disabled = false;
+        btn.textContent = "Update & restart";
+        updHintEl.textContent = `update failed — ${String(e)}`;
+      });
+    };
+    panel.append(text, btn);
+    updateBannerEl.appendChild(panel);
+  };
+  const runCheck = (manual: boolean) => {
+    if (manual) updHintEl.textContent = "checking…";
+    checkForUpdate().then((update) => {
+      if (update) {
+        showUpdate(update);
+        if (manual) updHintEl.textContent = `version ${update.version} is ready — see the notice up top`;
+      } else if (manual) {
+        updHintEl.textContent = "you're on the latest version";
+      }
+    });
+  };
+  root.querySelector<HTMLButtonElement>("#checkUpdateBtn")!.onclick = () => runCheck(true);
+  if (autoUpdateEnabled()) runCheck(false);
 
   // Start-the-talk hotkey. Deliberately no typing-target guard: pressing
   // ⌘/Ctrl+Enter straight from the intent textarea is the natural flow.

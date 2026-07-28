@@ -476,3 +476,16 @@ button.presence-opt.selected {
 .settings-group { padding: 10px 0 14px; border-top: 1px solid rgba(184, 166, 126, 0.28); }
 .settings-group:first-child { border-top: none; }
 .settings-group > .label { margin-bottom: 8px; }
+
+/* auto-update on/off segmented control */
+.seg { display: inline-flex; gap: 6px; }
+button.upd-opt { padding: 5px 14px; font-size: 0.85rem; }
+button.upd-opt.selected { background: var(--gold); color: var(--ink); border-color: transparent; }
+
+/* "an update is ready" banner at the top of setup */
+.update-banner {
+  display: flex; align-items: center; gap: 16px; justify-content: space-between;
+  padding: 12px 20px; margin-bottom: 16px;
+  border-left: 3px solid var(--gold);
+}
+.update-banner .update-text { font-style: italic; color: var(--gold-ink); font-size: 1.02rem; }
