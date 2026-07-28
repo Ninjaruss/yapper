@@ -116,21 +116,27 @@
   footer a:hover{color:var(--gold); border-bottom-color:var(--gold);}
   footer .made{font-style:italic; font-family:var(--serif); font-size:.85rem; letter-spacing:0;}
 
-  /* the wisp — sitting at the desk's edge, glowing */
-  .wisp{width:96px; height:auto; flex:0 0 auto; margin:-6px -6px 0 0;}
-  .wisp .aura{transform-origin:150px 185px;}
-  .wisp .inner{transform-origin:151px 190px;}
+  /* the wisp — a live candle flame: body sways from its base, the core
+     flickers, the aura breathes (ported from the app's "flowing" state) */
+  .wisp{width:100px; height:auto; flex:0 0 auto; margin:-6px -8px 0 0; overflow:visible;}
+  .wisp-aura{transform-origin:150px 185px;}
+  .wisp-body{transform-origin:150px 235px;}
+  .wisp-inner{transform-origin:150px 220px;}
 
   @media (prefers-reduced-motion:no-preference){
-    .wisp .aura{animation:pulse 3.6s ease-in-out infinite;}
-    .wisp .inner{animation:flick 1.4s ease-in-out infinite;}
+    .wisp-body{animation:wisp-sway 3.4s ease-in-out infinite;}
+    .wisp-inner{animation:wisp-flick 1.15s ease-in-out infinite;}
+    .wisp-aura{animation:wisp-aura 3s ease-in-out infinite;}
+    @keyframes wisp-sway{0%,100%{transform:rotate(-2.5deg) translateY(0);} 50%{transform:rotate(2deg) translateY(-5px);}}
+    @keyframes wisp-flick{0%,100%{transform:scale(1,1); opacity:.95;} 50%{transform:scale(.96,1.05); opacity:1;}}
+    @keyframes wisp-aura{0%,100%{opacity:.5;} 50%{opacity:.85;}}
+
+    /* page-load stagger for the sheet's contents */
     .sheet > *{opacity:0; transform:translateY(8px); animation:rise .7s cubic-bezier(.2,.7,.3,1) forwards;}
     header{animation-delay:.02s;} .tagline{animation-delay:.10s;} .lede{animation-delay:.18s;}
     .shape{animation-delay:.26s;} .note{animation-delay:.34s;} .get{animation-delay:.42s;}
     .firstrun{animation-delay:.48s;}
     @keyframes rise{to{opacity:1; transform:none;}}
-    @keyframes pulse{0%,100%{opacity:.5;} 50%{opacity:.95;}}
-    @keyframes flick{0%,100%{opacity:.97; transform:scaleY(1);} 45%{opacity:1; transform:scaleY(1.04);} 70%{opacity:.9; transform:scaleY(.98);}}
   }
 
   @media (max-width:640px){
@@ -159,13 +165,15 @@
               <stop offset="100%" stop-color="#e8912c" stop-opacity="0"/>
             </radialGradient>
           </defs>
-          <circle class="aura" cx="150" cy="185" r="72" fill="url(#au)"/>
-          <path d="M114 232 Q102 186 128 148 Q140 132 143 108 Q152 128 172 140 Q200 158 192 204 Q185 244 150 248 Q124 246 114 232 Z" fill="#ffe52c" opacity=".5" stroke="#1a1408" stroke-width="2.5" stroke-linejoin="round"/>
-          <path d="M130 222 Q122 186 142 158 Q148 150 150 138 Q156 152 168 162 Q184 178 178 208 Q172 232 150 235 Q136 233 130 222 Z" fill="#ffcf24" opacity=".85"/>
-          <path class="inner" d="M138 214 Q133 188 146 168 Q150 162 151 154 Q156 164 163 172 Q172 184 168 204 Q164 220 151 222 Q142 220 138 214 Z" fill="#fff6c8" opacity=".97"/>
-          <path d="M134 114 Q130 94 145 80 Q157 69 172 75 Q160 77 151 88 Q142 99 150 112 Q142 120 134 114 Z" fill="#ffe52c" opacity=".55" stroke="#1a1408" stroke-width="2.2" stroke-linejoin="round"/>
-          <path d="M138 188 q5 -4 10 0" fill="none" stroke="#3a3226" stroke-width="3.4" stroke-linecap="round"/>
-          <path d="M154 187 q5 -4 10 0" fill="none" stroke="#3a3226" stroke-width="3.4" stroke-linecap="round"/>
+          <circle class="wisp-aura" cx="150" cy="185" r="72" fill="url(#au)"/>
+          <g class="wisp-body">
+            <path d="M114 232 Q102 186 128 148 Q140 132 143 108 Q152 128 172 140 Q200 158 192 204 Q185 244 150 248 Q124 246 114 232 Z" fill="#ffe52c" opacity=".5" stroke="#1a1408" stroke-width="2.5" stroke-linejoin="round"/>
+            <path d="M130 222 Q122 186 142 158 Q148 150 150 138 Q156 152 168 162 Q184 178 178 208 Q172 232 150 235 Q136 233 130 222 Z" fill="#ffcf24" opacity=".85"/>
+            <path class="wisp-inner" d="M138 214 Q133 188 146 168 Q150 162 151 154 Q156 164 163 172 Q172 184 168 204 Q164 220 151 222 Q142 220 138 214 Z" fill="#fff6c8" opacity=".97"/>
+            <path d="M134 114 Q130 94 145 80 Q157 69 172 75 Q160 77 151 88 Q142 99 150 112 Q142 120 134 114 Z" fill="#ffe52c" opacity=".55" stroke="#1a1408" stroke-width="2.2" stroke-linejoin="round"/>
+            <path d="M138 188 q5 -4 10 0" fill="none" stroke="#3a3226" stroke-width="3.4" stroke-linecap="round"/>
+            <path d="M154 187 q5 -4 10 0" fill="none" stroke="#3a3226" stroke-width="3.4" stroke-linecap="round"/>
+          </g>
         </svg>
       </header>
 
