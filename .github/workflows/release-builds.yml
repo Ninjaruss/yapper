@@ -1,0 +1,85 @@
+name: release-builds
+
+# Cross-platform installers can't be produced by cross-compiling from one OS —
+# llama.cpp, onnxruntime (sherpa), and the WebView are all native and must be
+# built on the target OS. So each platform builds on its own runner and the
+# artifacts are attached to the matching GitHub Release.
+#
+# Trigger manually (workflow_dispatch, choose the tag to attach to) or by
+# pushing a v* tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the builds to (must already exist, e.g. v0.1.0)"
+        required: true
+        default: "v0.1.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows → NSIS .exe installer (+ .msi). CPU-only inference (no Metal).
+          - platform: windows-latest
+            args: ""
+          # Linux → AppImage (distro-agnostic; this is the one that runs on
+          # SteamOS / Steam Deck desktop) + .deb. Built on 22.04 for a broadly
+          # compatible glibc.
+          - platform: ubuntu-22.04
+            args: "--bundles appimage,deb"
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Native build deps for the Linux bundle: WebKitGTK (the webview),
+      # ALSA headers (cpal audio capture), plus the usual Tauri toolchain.
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libgtk-3-dev \
+            patchelf \
+            build-essential curl wget file libssl-dev libxdo-dev
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build (llama.cpp / sherpa are slow to compile)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and attach to the release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "Yapper ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
