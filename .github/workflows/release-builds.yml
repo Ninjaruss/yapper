@@ -28,10 +28,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # NOTE: windows-latest is temporarily out of the matrix while the
-          # Linux AppImage packaging is fixed — Windows already builds green
-          # and its installers are on the release. Restore before the next
-          # release: { platform: windows-latest, args: "" }.
+          # NOTE: windows-latest is out of the matrix for now. It BUILDS green,
+          # but the NSIS/MSI installers don't bundle sherpa's onnxruntime.dll /
+          # sherpa-onnx-c-api.dll, so the app crashes at launch with a missing
+          # DLL — the same root cause fixed on macOS (Contents/Frameworks) and
+          # Linux (linuxdeploy bundles the .so). Restore it together with a
+          # DLL-bundling step: { platform: windows-latest, args: "" }.
           #
           # Linux → AppImage (distro-agnostic; this is the one that runs on
           # SteamOS / Steam Deck desktop) + .deb. Built on 22.04 for a broadly
