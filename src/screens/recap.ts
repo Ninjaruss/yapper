@@ -3,6 +3,8 @@ import { ipc, type Session, type OutlineRow, type YapperEvent, type TranscriptSe
 import { fmtDate, fmtDuration } from "../format";
 import { coverageNote, fillersPerMinute, longPauseCount, usualFillersPerMinute, usualWordsPerMinute, wordsPerMinute } from "../stats";
 import { sinkGhosts } from "../outline";
+import { createDisclosure } from "../disclosure";
+import { currentSegmentIndex } from "../transcript";
 
 // Human labels for event kinds shown in the "Moments" timeline. Unknown
 // kinds fall back to the raw kind string rather than disappearing.
@@ -45,31 +47,37 @@ export function renderRecap(
       </div>
       <audio id="recapAudio" preload="metadata" style="display:none;"></audio>
     </div>
-    <div class="paper-panel" style="margin-top:16px;">
-      <div class="label">The shape of it</div>
-      <div id="recapOutline"></div>
-    </div>
     <div class="paper-panel" id="recapTranscriptPanel" style="margin-top:16px; display:none;">
       <div class="label">Transcript</div>
       <p class="label" id="recapTranscriptHint" style="text-transform:none; letter-spacing:0; font-style:italic;">every line, timestamped</p>
       <div id="recapTranscript" style="max-height:40vh; overflow-y:auto;"></div>
     </div>
     <div class="paper-panel" style="margin-top:16px;">
-      <div class="label">Moments</div>
-      <div id="recapSignals"></div>
+      <div class="label">The shape of it</div>
+      <div id="recapOutline"></div>
     </div>
     <div class="paper-panel" id="recapRetroPanel" style="margin-top:16px; display:none;">
       <div class="label">Looking back</div>
       <div id="recapRetro"></div>
     </div>
     <p id="recapStats" class="label on-desk" style="margin-top:10px;"></p>
+    <div class="paper-panel" id="recapMomentsMount" style="margin-top:12px; padding:2px 22px;"></div>
     <p id="recapError" class="paused-note" role="alert"></p>
-    <div style="display:flex; gap:10px; margin-top:8px;">
+    <div style="display:flex; gap:10px; margin-top:12px;">
       <button id="recapExport" class="quiet" style="display:none;">Export transcript</button>
       <button id="recapReveal" class="quiet" style="display:none;">Show file</button>
       <button id="recapBack">Back to the desk</button>
     </div>
   `;
+
+  // Moments fold into a disclosure so the recap opens as a clean summary; the
+  // events loader below fills #recapSignals inside its body and sets the count.
+  const momentsDisc = createDisclosure({ label: "Moments", count: "" });
+  const momentsSignals = document.createElement("div");
+  momentsSignals.id = "recapSignals";
+  momentsDisc.body.appendChild(momentsSignals);
+  root.querySelector<HTMLElement>("#recapMomentsMount")!.appendChild(momentsDisc.el);
+  const momentsCountEl = momentsDisc.el.querySelector<HTMLElement>(".disc-count")!;
 
   const errorEl = root.querySelector<HTMLElement>("#recapError")!;
   const outlineEl = root.querySelector<HTMLElement>("#recapOutline")!;
@@ -142,6 +150,30 @@ export function renderRecap(
     playBtn.textContent = "▶";
     playBtn.setAttribute("aria-label", "play");
   };
+  // Follow-playback highlight: as the audio plays, the current transcript line
+  // gets a gold `.now` spine and scrolls into view. Populated when segments
+  // load below; a no-op until then (and when there's no audio).
+  let scrollSegments: TranscriptSegment[] = [];
+  const scrollLineEls: HTMLElement[] = [];
+  let nowIdx = -1;
+  let userScrolledAt = 0;
+  const highlightNowPlaying = () => {
+    if (scrollLineEls.length === 0) return;
+    const idx = currentSegmentIndex(scrollSegments, audioEl.currentTime * 1000);
+    if (idx === nowIdx) return;
+    if (nowIdx >= 0) {
+      scrollLineEls[nowIdx]?.classList.remove("now");
+      scrollLineEls[nowIdx]?.removeAttribute("aria-current");
+    }
+    nowIdx = idx;
+    if (idx < 0) return;
+    const line = scrollLineEls[idx]!;
+    line.classList.add("now");
+    line.setAttribute("aria-current", "true");
+    // Yield to a user who just scrolled away to read elsewhere.
+    if (Date.now() - userScrolledAt > 1800) line.scrollIntoView({ block: "nearest" });
+  };
+
   const refreshClock = () => {
     const dur = Number.isFinite(audioEl.duration) ? audioEl.duration : 0;
     fillEl.style.width = dur > 0 ? `${(audioEl.currentTime / dur) * 100}%` : "0%";
@@ -153,6 +185,7 @@ export function renderRecap(
       "aria-valuetext",
       `${fmtDuration(audioEl.currentTime * 1000)} of ${fmtDuration(dur * 1000)}`,
     );
+    highlightNowPlaying();
   };
   audioEl.ontimeupdate = refreshClock;
   audioEl.ondurationchange = refreshClock;
@@ -365,7 +398,14 @@ export function renderRecap(
         transcriptPanel.style.display = "";
         if (session.audio_exists) {
           root.querySelector<HTMLElement>("#recapTranscriptHint")!.textContent =
-            "click a line to jump the playback there";
+            "▶ following playback · click a line to jump";
+          // Manual scroll (wheel / drag / arrows) pauses the auto-follow so it
+          // doesn't yank the view back while you're reading elsewhere.
+          for (const ev of ["wheel", "pointerdown", "keydown"]) {
+            transcriptEl.addEventListener(ev, () => {
+              userScrolledAt = Date.now();
+            });
+          }
         }
         for (const seg of segments) {
           const p = document.createElement("p");
@@ -394,7 +434,11 @@ export function renderRecap(
             };
           }
           transcriptEl.appendChild(p);
+          scrollLineEls.push(p);
         }
+        // Hand the loaded segments to the follow-playback highlighter.
+        scrollSegments = segments;
+        highlightNowPlaying();
       })
       .catch((e) => {
         errorEl.textContent = String(e);
@@ -468,6 +512,7 @@ export function renderRecap(
       }
 
       statsState.signals = events.length;
+      momentsCountEl.textContent = String(events.length);
       renderStats();
       // "your usual" anchors arrive from history (no-shame: the speaker's
       // own baseline, never a universal rule).

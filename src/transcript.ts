@@ -52,3 +52,20 @@ export function makePauseMark(): HTMLParagraphElement {
   p.textContent = "· · ·";
   return p;
 }
+
+/** Index of the segment "playing" at `ms` — the last segment that has started
+ * (`start_ms <= ms`). Returns -1 before the first segment starts. A gap between
+ * segments keeps the highlight on the most-recently-started line rather than
+ * flickering off. Assumes segments are sorted by `start_ms` (as stored). Drives
+ * the recap transcript's follow-playback highlight. */
+export function currentSegmentIndex(
+  segments: readonly { start_ms: number }[],
+  ms: number,
+): number {
+  let idx = -1;
+  for (let i = 0; i < segments.length; i++) {
+    if (segments[i].start_ms <= ms) idx = i;
+    else break;
+  }
+  return idx;
+}

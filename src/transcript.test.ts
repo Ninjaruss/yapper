@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PAUSE_MARK_MS, isFiller, makePauseMark, needsPauseMark, renderSegmentLine } from "./transcript";
+import { PAUSE_MARK_MS, currentSegmentIndex, isFiller, makePauseMark, needsPauseMark, renderSegmentLine } from "./transcript";
 
 const seg = (text: string, start = 1000, end = 2000, id = 1) => ({
   id,
@@ -50,5 +50,29 @@ describe("pause marks", () => {
     expect(mark.classList.contains("pause-mark")).toBe(true);
     expect(mark.textContent).toBe("· · ·");
     expect(mark.dataset.segmentId).toBeUndefined();
+  });
+});
+
+describe("currentSegmentIndex", () => {
+  const segs = [
+    { start_ms: 0, end_ms: 1000 },
+    { start_ms: 2000, end_ms: 3000 },
+    { start_ms: 5000, end_ms: 6000 },
+  ];
+  it("returns -1 before the first segment starts", () => {
+    expect(currentSegmentIndex(segs, -1)).toBe(-1);
+  });
+  it("finds the segment playing at a time inside it", () => {
+    expect(currentSegmentIndex(segs, 0)).toBe(0);
+    expect(currentSegmentIndex(segs, 2500)).toBe(1);
+  });
+  it("keeps the most-recently-started segment during a gap", () => {
+    expect(currentSegmentIndex(segs, 3500)).toBe(1); // between seg 1 end and seg 2 start
+  });
+  it("returns the last segment after everything has played", () => {
+    expect(currentSegmentIndex(segs, 99_999)).toBe(2);
+  });
+  it("returns -1 for an empty transcript", () => {
+    expect(currentSegmentIndex([], 100)).toBe(-1);
   });
 });

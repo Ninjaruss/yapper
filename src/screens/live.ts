@@ -15,11 +15,11 @@ const SHINE_UNDERLINE_MS = 4000;
 
 export function renderLive(root: HTMLElement, onEnded: (session: Session) => void): void {
   root.innerHTML = `
-    <div class="paper-panel" style="display:flex; align-items:center; gap:24px;">
+    <div class="paper-panel live-header">
       <div class="elapsed" id="elapsed">0:00</div>
       <span id="chapter" class="chapter-title"></span>
       <div class="level-meter" style="flex:1"><div id="meter"></div></div>
-      <button id="pause" class="quiet">Pause listening</button>
+      <button id="pause" class="quiet">Pause</button>
       <button id="end">End the talk</button>
     </div>
     <p id="state" class="paused-note" role="status"></p>
@@ -400,7 +400,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     try {
       if (paused) {
         await ipc.resumeListening();
-        pauseBtn.textContent = "Pause listening";
+        pauseBtn.textContent = "Pause";
         stateEl.textContent = "";
         paused = false;
         lastVoiceAt = Date.now();
