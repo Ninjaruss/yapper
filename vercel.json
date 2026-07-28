@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "echo 'Yapper is a native desktop app; Vercel serves the static landing page in site/ — no build.'",
+  "outputDirectory": "site"
+}
