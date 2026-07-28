@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged into the generated bundle Info.plist by the Tauri CLI. macOS
+	     terminates any app that reaches the microphone without this key, so
+	     it is required for recording to work at all on a distributed build.
+	     Wording reflects Yapper's local-first promise. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Yapper records your voice to transcribe and reflect on your talk. Audio stays on your Mac — it is never uploaded.</string>
+</dict>
+</plist>
