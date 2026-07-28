@@ -224,7 +224,7 @@ fn format_outline(outline: &[OutlineEntry]) -> String {
     }
     outline
         .iter()
-        .map(|entry| format!("- {} [{}]", entry.label, status_str(entry.status)))
+        .map(|entry| format!("- {} [{}]", entry.label, entry.status.as_str()))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -245,23 +245,6 @@ fn format_mmss(ms: i64) -> String {
     let m = total_secs / 60;
     let s = total_secs % 60;
     format!("{m}:{s:02}")
-}
-
-fn status_str(status: OutlineStatus) -> &'static str {
-    match status {
-        OutlineStatus::Covered => "covered",
-        OutlineStatus::Current => "current",
-        OutlineStatus::IntentUntouched => "intent_untouched",
-    }
-}
-
-fn parse_status(s: &str) -> Option<OutlineStatus> {
-    match s {
-        "covered" => Some(OutlineStatus::Covered),
-        "current" => Some(OutlineStatus::Current),
-        "intent_untouched" => Some(OutlineStatus::IntentUntouched),
-        _ => None,
-    }
 }
 
 /// Strips a leading/trailing ``` fence, with or without a "json" language
@@ -374,7 +357,7 @@ pub fn parse_update(raw: &str, last_question: Option<&str>) -> Option<InsightUpd
             let status = item
                 .get("status")
                 .and_then(|v| v.as_str())
-                .and_then(parse_status);
+                .and_then(OutlineStatus::from_wire);
             match (label, status) {
                 (Some(label), Some(status)) if !label.is_empty() => {
                     outline.push(OutlineEntry {

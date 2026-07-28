@@ -58,3 +58,9 @@ path = "examples/insight_spike.rs"
 name = "insight_replay"
 path = "examples/insight_replay.rs"
 
+# Keep debug builds small: heavy native deps (llama.cpp, onnxruntime) emit
+# gigabytes of full debuginfo we never need. Line tables keep backtraces useful.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+

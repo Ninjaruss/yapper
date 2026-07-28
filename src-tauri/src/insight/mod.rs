@@ -22,6 +22,29 @@ pub enum OutlineStatus {
     IntentUntouched,
 }
 
+impl OutlineStatus {
+    /// The snake_case wire string used in prompts and the outline event
+    /// payload. Kept here (not duplicated per call site) so the string form
+    /// and its inverse `from_wire` can never drift apart.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OutlineStatus::Covered => "covered",
+            OutlineStatus::Current => "current",
+            OutlineStatus::IntentUntouched => "intent_untouched",
+        }
+    }
+
+    /// Parses the wire string back; `None` for anything unrecognized.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "covered" => Some(OutlineStatus::Covered),
+            "current" => Some(OutlineStatus::Current),
+            "intent_untouched" => Some(OutlineStatus::IntentUntouched),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct InsightUpdate {
     pub outline: Vec<OutlineEntry>, // full replacement snapshot, ≤10 entries

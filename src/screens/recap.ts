@@ -20,11 +20,6 @@ const KIND_LABELS: Record<string, string> = {
 // feedback button (spec: "recap lists fired signals with feedback").
 const FEEDBACK_KINDS = new Set(["rhythm_filler", "rhythm_pace", "repetition"]);
 
-function fmtMmSs(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
-}
-
 export function renderRecap(
   root: HTMLElement,
   session: Session,
@@ -45,7 +40,7 @@ export function renderRecap(
       <div class="label">Listen back</div>
       <div class="audio-bar">
         <button id="recapPlay" class="quiet audio-play" aria-label="play">▶</button>
-        <div class="audio-track" id="recapTrack" aria-label="seek"><div class="audio-fill" id="recapFill"></div></div>
+        <div class="audio-track" id="recapTrack" role="slider" tabindex="0" aria-label="seek" aria-valuemin="0" aria-valuenow="0"><div class="audio-fill" id="recapFill"></div></div>
         <span class="label audio-time" id="recapTime">0:00 / 0:00</span>
       </div>
       <audio id="recapAudio" preload="metadata" style="display:none;"></audio>
@@ -130,10 +125,6 @@ export function renderRecap(
   const trackEl = root.querySelector<HTMLElement>("#recapTrack")!;
   const fillEl = root.querySelector<HTMLElement>("#recapFill")!;
   const timeEl = root.querySelector<HTMLElement>("#recapTime")!;
-  const fmtClock = (secs: number): string => {
-    const s = Math.max(0, Math.floor(secs));
-    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-  };
   playBtn.onclick = () => {
     if (audioEl.paused) {
       void audioEl.play().catch(() => {
@@ -154,7 +145,14 @@ export function renderRecap(
   const refreshClock = () => {
     const dur = Number.isFinite(audioEl.duration) ? audioEl.duration : 0;
     fillEl.style.width = dur > 0 ? `${(audioEl.currentTime / dur) * 100}%` : "0%";
-    timeEl.textContent = `${fmtClock(audioEl.currentTime)} / ${fmtClock(dur)}`;
+    timeEl.textContent = `${fmtDuration(audioEl.currentTime * 1000)} / ${fmtDuration(dur * 1000)}`;
+    // Keep the slider's assistive-tech state in step with the visual fill.
+    trackEl.setAttribute("aria-valuemax", String(Math.round(dur)));
+    trackEl.setAttribute("aria-valuenow", String(Math.round(audioEl.currentTime)));
+    trackEl.setAttribute(
+      "aria-valuetext",
+      `${fmtDuration(audioEl.currentTime * 1000)} of ${fmtDuration(dur * 1000)}`,
+    );
   };
   audioEl.ontimeupdate = refreshClock;
   audioEl.ondurationchange = refreshClock;
@@ -163,6 +161,36 @@ export function renderRecap(
     if (!Number.isFinite(dur) || dur <= 0) return;
     const rect = trackEl.getBoundingClientRect();
     audioEl.currentTime = ((e.clientX - rect.left) / rect.width) * dur;
+    refreshClock();
+  };
+  // Keyboard seeking — the track is a focusable slider, so it must answer
+  // arrow keys like every other action in the app (transcript lines below
+  // are click- and Enter-seekable; the scrubber shouldn't be mouse-only).
+  const SEEK_STEP_S = 5;
+  trackEl.onkeydown = (e) => {
+    const dur = audioEl.duration;
+    if (!Number.isFinite(dur) || dur <= 0) return;
+    let next: number | null = null;
+    switch (e.key) {
+      case "ArrowLeft":
+      case "ArrowDown":
+        next = audioEl.currentTime - SEEK_STEP_S;
+        break;
+      case "ArrowRight":
+      case "ArrowUp":
+        next = audioEl.currentTime + SEEK_STEP_S;
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = dur;
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+    audioEl.currentTime = Math.max(0, Math.min(dur, next));
     refreshClock();
   };
   // WKWebView streams media with byte-range requests, and range responses
@@ -206,8 +234,6 @@ export function renderRecap(
         ? `playback failed (media error ${code}) — transcript still available`
         : "the recording file went missing — transcript still available";
     };
-    // A just-ended session's WAV converts to FLAC in the background and the
-    // WAV is then deleted; on any load failure, refetch the fresh path once.
     const retryFreshPath = () => {
       if (retried) {
         playbackGone();
@@ -346,7 +372,7 @@ export function renderRecap(
           p.className = "transcript-line";
           const stamp = document.createElement("span");
           stamp.className = "transcript-stamp";
-          stamp.textContent = fmtMmSs(seg.start_ms);
+          stamp.textContent = fmtDuration(seg.start_ms);
           const text = document.createElement("span");
           text.textContent = seg.text;
           p.append(stamp, text);
@@ -481,8 +507,8 @@ function buildSignalRow(ev: YapperEvent, errorEl: HTMLElement): HTMLElement {
   text.style.flex = "1";
   const label = KIND_LABELS[ev.kind] ?? ev.kind;
   text.textContent = ev.note
-    ? `[${fmtMmSs(ev.at_ms)}] ${label} · ${ev.note}`
-    : `[${fmtMmSs(ev.at_ms)}] ${label}`;
+    ? `[${fmtDuration(ev.at_ms)}] ${label} · ${ev.note}`
+    : `[${fmtDuration(ev.at_ms)}] ${label}`;
   row.appendChild(text);
 
   if (FEEDBACK_KINDS.has(ev.kind)) {

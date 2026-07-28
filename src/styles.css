@@ -113,6 +113,9 @@ select, textarea {
   background: linear-gradient(90deg, var(--gold), var(--ember));
   transition: width 80ms linear;
 }
+/* First-run model download bar: pulses at reduced opacity while progress is
+   indeterminate (no Content-Length). Driven by setup.ts via inline styles. */
+@keyframes yapper-model-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.85; } }
 
 .elapsed { font-family: var(--mono); font-size: 2.4rem; color: var(--gold-ink); }
 .paused-note { color: var(--ember); font-style: italic; }
@@ -347,6 +350,7 @@ button.presence-opt.selected {
   overflow: hidden;
   cursor: pointer;
 }
+.audio-track:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
 .audio-fill {
   height: 100%;
   width: 0%;

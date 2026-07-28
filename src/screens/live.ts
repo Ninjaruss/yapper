@@ -4,6 +4,7 @@ import { sinkGhosts, updateOutline } from "../outline";
 import { eventMatchesCombo, isTypingTarget, loadKeybinds } from "../keys";
 import { makePauseMark, needsPauseMark, renderSegmentLine } from "../transcript";
 import { loadPresence, shouldShowQuestion, shouldShowRhythm } from "../presence";
+import { fmtDuration } from "../format";
 
 const MAX_TRANSCRIPT_LINES = 40;
 const VOICE_LEVEL_THRESHOLD = 0.02;
@@ -290,18 +291,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
             }
             // Run cleanup exactly once before calling onEnded
             ended = true;
-            unlisten?.();
-            segmentUnlisten?.();
-            signalUnlisten?.();
-            outlineUnlisten?.();
-            questionUnlisten?.();
-            shineUnlisten?.();
-            wrapupUnlisten?.();
-            if (shineUnderlineTimer !== undefined) clearTimeout(shineUnderlineTimer);
-            for (const t of glowTimers.values()) clearTimeout(t);
-            glowTimers.clear();
-            wisp.destroy();
-            window.removeEventListener("keydown", onHotkey);
+            cleanup();
             // Now run the recap flow with the recovered session
             onEnded(last);
           } catch (e) {
@@ -316,8 +306,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     // Reset counter on any non-null status
     nullStatusCount = 0;
     latestElapsedMs = status.elapsed_ms;
-    const total = Math.floor(status.elapsed_ms / 1000);
-    elapsedEl.textContent = `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+    elapsedEl.textContent = fmtDuration(status.elapsed_ms);
 
     // Quiet time-in-topic marker on the current outline line.
     if (
@@ -385,6 +374,27 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
     }
   }, 500);
 
+  // Single teardown for every path that leaves the live screen (End, and
+  // the null-status recovery button). Stops the poll timer, drops all
+  // backend listeners, clears pending glow/shine timers, and tears down the
+  // wisp + hotkeys. Idempotent on the timer (clearInterval twice is safe).
+  // Callers set `ended` and call onEnded() themselves.
+  const cleanup = () => {
+    clearInterval(timer);
+    unlisten?.();
+    segmentUnlisten?.();
+    signalUnlisten?.();
+    outlineUnlisten?.();
+    questionUnlisten?.();
+    shineUnlisten?.();
+    wrapupUnlisten?.();
+    if (shineUnderlineTimer !== undefined) clearTimeout(shineUnderlineTimer);
+    for (const t of glowTimers.values()) clearTimeout(t);
+    glowTimers.clear();
+    wisp.destroy();
+    window.removeEventListener("keydown", onHotkey);
+  };
+
   pauseBtn.onclick = async () => {
     pauseBtn.disabled = true;
     try {
@@ -424,19 +434,7 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
       return;
     }
     ended = true;
-    clearInterval(timer);
-    unlisten?.();
-    segmentUnlisten?.();
-    signalUnlisten?.();
-    outlineUnlisten?.();
-    questionUnlisten?.();
-    shineUnlisten?.();
-    wrapupUnlisten?.();
-    if (shineUnderlineTimer !== undefined) clearTimeout(shineUnderlineTimer);
-    for (const t of glowTimers.values()) clearTimeout(t);
-    glowTimers.clear();
-    wisp.destroy();
-    window.removeEventListener("keydown", onHotkey);
+    cleanup();
     onEnded(endedSession);
   };
 }

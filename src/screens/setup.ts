@@ -69,10 +69,10 @@ export function renderSetup(
     </div>
     <div class="paper-panel" style="margin-top:22px; padding:14px 16px;">
       <div class="label" style="margin-bottom:8px;">Companion</div>
-      <div class="presence-row">
-        <button class="quiet presence-opt" data-presence="present">present</button>
-        <button class="quiet presence-opt" data-presence="quieter">quieter</button>
-        <button class="quiet presence-opt" data-presence="recap-only">recap only</button>
+      <div class="presence-row" role="radiogroup" aria-label="Companion presence">
+        <button class="quiet presence-opt" data-presence="present" role="radio">present</button>
+        <button class="quiet presence-opt" data-presence="quieter" role="radio">quieter</button>
+        <button class="quiet presence-opt" data-presence="recap-only" role="radio">recap only</button>
       </div>
       <p class="label key-hint" id="presenceHint"></p>
     </div>
@@ -125,9 +125,6 @@ export function renderSetup(
     if (ready.stt && ready.llm) return;
 
     bannerEl.innerHTML = `
-      <style>
-        @keyframes yapper-model-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.85; } }
-      </style>
       <div class="paper-panel" style="margin-top:22px;">
         <div class="label">First run</div>
         <p id="modelText" class="paused-note" style="margin-bottom:8px;">${textForModel(ready.stt ? "llm" : "moonshine-base-en-int8")}</p>
@@ -226,12 +223,22 @@ export function renderSetup(
   // Both lists refresh while this screen is visible: devices come and go
   // (bluetooth mics), recordings get deleted in Finder. Selection and
   // scroll are preserved; DOM is only touched when content actually changed.
-  let deviceKey = "";
+  // Sentinel (not "") so the very first refresh always renders — an empty
+  // device list has key "", which would otherwise match the initial value
+  // and skip drawing the placeholder.
+  let deviceKey = " ";
   async function refreshDevices(): Promise<void> {
     const devices: InputDevice[] = await ipc.listInputDevices();
     const key = devices.map((d) => `${d.name}${d.is_default ? "*" : ""}`).join("|");
     if (key === deviceKey) return;
     deviceKey = key;
+    if (devices.length === 0) {
+      // No inputs found — a plain disabled placeholder instead of an empty
+      // dropdown. Begin-the-talk still works: start_session falls back to the
+      // system default device when none is passed.
+      mic.innerHTML = `<option value="" disabled selected>no microphone found</option>`;
+      return;
+    }
     const previous = mic.value;
     mic.innerHTML = devices
       .map((d) => `<option value="${escapeHtml(d.name)}" ${d.is_default ? "selected" : ""}>${escapeHtml(d.name)}</option>`)
@@ -468,15 +475,37 @@ export function renderSetup(
   const renderPresence = () => {
     const current = loadPresence();
     presenceButtons.forEach((btn) => {
-      btn.classList.toggle("selected", btn.dataset.presence === current);
+      const active = btn.dataset.presence === current;
+      btn.classList.toggle("selected", active);
+      // Radiogroup semantics: a radio announces via aria-checked (not
+      // aria-pressed), and only the checked option is a tab stop — arrow
+      // keys move between the rest (roving tabindex).
+      btn.setAttribute("aria-checked", String(active));
+      btn.tabIndex = active ? 0 : -1;
     });
     presenceHintEl.textContent = PRESENCE_HINTS[current];
   };
   renderPresence();
-  presenceButtons.forEach((btn) => {
-    btn.onclick = () => {
-      savePresence(btn.dataset.presence as Presence);
-      renderPresence();
+  const selectPresence = (btn: HTMLButtonElement) => {
+    savePresence(btn.dataset.presence as Presence);
+    renderPresence();
+  };
+  presenceButtons.forEach((btn, i) => {
+    btn.onclick = () => selectPresence(btn);
+    // Arrow keys walk the group and select as they land — the WAI-ARIA
+    // radiogroup pattern. Wraps at both ends.
+    btn.onkeydown = (e) => {
+      const dir =
+        e.key === "ArrowRight" || e.key === "ArrowDown"
+          ? 1
+          : e.key === "ArrowLeft" || e.key === "ArrowUp"
+            ? -1
+            : 0;
+      if (dir === 0) return;
+      e.preventDefault();
+      const next = presenceButtons[(i + dir + presenceButtons.length) % presenceButtons.length];
+      selectPresence(next);
+      next.focus();
     };
   });
 

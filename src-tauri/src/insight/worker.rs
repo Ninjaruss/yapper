@@ -243,13 +243,6 @@ fn run_insight_pass(
     apply_shine(store, session_id, elapsed_ms, state, event_tx, update.shine);
 }
 
-fn outline_status_str(status: OutlineStatus) -> &'static str {
-    match status {
-        OutlineStatus::Covered => "covered",
-        OutlineStatus::Current => "current",
-        OutlineStatus::IntentUntouched => "intent_untouched",
-    }
-}
 
 /// A non-empty outline that differs from the current in-memory snapshot is
 /// a full-replacement persist + publish; an empty or unchanged outline is a
@@ -283,7 +276,7 @@ fn apply_outline(
     let entries: Vec<(&str, &str)> = state
         .current_outline
         .iter()
-        .map(|e| (e.label.as_str(), outline_status_str(e.status)))
+        .map(|e| (e.label.as_str(), e.status.as_str()))
         .collect();
     if let Err(e) = store.replace_outline(session_id, &entries, elapsed_ms) {
         eprintln!("insight worker: replace_outline failed: {e}");
