@@ -28,16 +28,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Windows → NSIS .exe + .msi. The DLL-bundling steps below pack
-          # sherpa's onnxruntime.dll / sherpa-onnx-c-api.dll next to the exe
-          # (without them the app crashes at launch with a missing DLL).
+          # Windows → NSIS .exe ONLY. The DLL-bundling steps below pack sherpa's
+          # DLLs next to the exe as resources; NSIS honors that, but the WiX/MSI
+          # bundler does NOT (the .msi comes out identical, still missing the
+          # DLLs → crashes), so we don't build the .msi.
           - platform: windows-latest
-            args: ""
-          # Linux is DONE and shipped (self-contained AppImage). Temporarily
-          # out of the matrix while iterating on the Windows DLL fix; restore
-          # for the next release:
-          #   - platform: ubuntu-22.04
-          #     args: "--bundles appimage,deb"
+            args: "--bundles nsis"
+          # Linux → AppImage (runs on SteamOS / Steam Deck). linuxdeploy bundles
+          # sherpa's .so (see LD_LIBRARY_PATH step). No .deb: it doesn't bundle
+          # the .so and would crash.
+          - platform: ubuntu-22.04
+            args: "--bundles appimage"
     runs-on: ${{ matrix.platform }}
 
     steps:
