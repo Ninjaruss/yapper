@@ -42,6 +42,8 @@ export function createOverflowMenu(items: OverflowItem[], ariaLabel = "More acti
   });
 
   let open = false;
+  // Watches for this menu's own removal from the DOM while open — see openMenu.
+  let disconnectObserver: MutationObserver | null = null;
   const onDocClick = (e: MouseEvent) => {
     if (!root.contains(e.target as Node)) close();
   };
@@ -52,6 +54,15 @@ export function createOverflowMenu(items: OverflowItem[], ariaLabel = "More acti
     menu.hidden = false;
     btn.setAttribute("aria-expanded", "true");
     document.addEventListener("click", onDocClick, true);
+    // A background re-render (e.g. setup.ts's 4s poll rebuilding the talk
+    // list) can rip this menu's row out of the DOM while it's still open. That
+    // path never calls close(), so without this the capture-phase document
+    // listener would leak and pin the detached subtree. Watch for our own
+    // disconnection and self-close, which tears the listener down.
+    disconnectObserver = new MutationObserver(() => {
+      if (!root.isConnected) close();
+    });
+    disconnectObserver.observe(document.body, { childList: true, subtree: true });
     itemEls[0]?.focus();
   }
   function close() {
@@ -60,6 +71,8 @@ export function createOverflowMenu(items: OverflowItem[], ariaLabel = "More acti
     menu.hidden = true;
     btn.setAttribute("aria-expanded", "false");
     document.removeEventListener("click", onDocClick, true);
+    disconnectObserver?.disconnect();
+    disconnectObserver = null;
   }
 
   btn.addEventListener("click", () => (open ? close() : openMenu()));

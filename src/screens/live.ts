@@ -323,7 +323,9 @@ export function renderLive(root: HTMLElement, onEnded: (session: Session) => voi
       const mins = Math.floor((latestElapsedMs - currentTopicSinceMs) / 60_000);
       topicTimeSpan.textContent = `${mins} min`;
     }
-    if (status.writer_failed) {
+    if (status.device_failed) {
+      stateEl.textContent = "lost the mic (unplugged or disconnected) — end the talk to keep what's saved";
+    } else if (status.writer_failed) {
       stateEl.textContent = "trouble writing audio to disk — end the talk to keep what's saved";
     }
     if (!status.stt_active) {

@@ -261,7 +261,7 @@ export function renderSetup(
   // Sentinel (not "") so the very first refresh always renders — an empty
   // device list has key "", which would otherwise match the initial value
   // and skip drawing the placeholder.
-  let deviceKey = " ";
+  let deviceKey = "\uffff";
   async function refreshDevices(): Promise<void> {
     const devices: InputDevice[] = await ipc.listInputDevices();
     const key = devices.map((d) => `${d.name}${d.is_default ? "*" : ""}`).join("|");
@@ -284,7 +284,12 @@ export function renderSetup(
   }
 
   let pastKey = "";
+  // True while a row's inline "delete for good?" strip is showing. The 4s
+  // poll must not rebuild the list underneath it (that would silently discard
+  // the pending confirmation), so refreshPast bails out while it's set.
+  let confirmActive = false;
   async function refreshPast(): Promise<void> {
+    if (confirmActive) return;
     const sessions: Session[] = await ipc.listSessions();
 
     // The trend panel reuses this same fetch (no extra ipc round-trip) and
@@ -314,6 +319,7 @@ export function renderSetup(
     for (const s of sessions) {
       const row = document.createElement("div");
       row.className = "talk-row paper-panel";
+      row.dataset.sessionId = String(s.id);
 
       const date = document.createElement("span");
       date.className = "talk-date";
@@ -381,6 +387,7 @@ export function renderSetup(
   // deletes the recording + transcript; cancelling re-renders the list (forced
   // past the pastKey guard, since nothing on the server changed).
   function confirmForget(row: HTMLElement, id: number): void {
+    confirmActive = true; // freeze the poll so it can't rebuild this row away
     row.innerHTML = "";
     row.classList.add("talk-confirm");
 
@@ -391,16 +398,25 @@ export function renderSetup(
     const del = document.createElement("button");
     del.className = "talk-recap danger";
     del.textContent = "Delete";
-    del.onclick = () =>
+    del.onclick = () => {
+      confirmActive = false;
       ipc.forgetSession(id).then(() => refreshPast()).catch((e) => {
         errorEl.textContent = String(e);
         void reRenderPast();
       });
+    };
 
     const cancel = document.createElement("button");
     cancel.className = "quiet";
     cancel.textContent = "Cancel";
-    cancel.onclick = () => void reRenderPast();
+    // Rebuild the list, then hand keyboard focus back to the row's ⋯ trigger
+    // so a keyboard user isn't dropped onto <body>.
+    cancel.onclick = () =>
+      void reRenderPast().then(() => {
+        pastEl
+          .querySelector<HTMLButtonElement>(`[data-session-id="${id}"] .overflow-btn`)
+          ?.focus();
+      });
 
     row.append(msg, del, cancel);
     del.focus();
@@ -409,6 +425,7 @@ export function renderSetup(
   // Force refreshPast to rebuild even when the session list is byte-identical
   // (used after cancel/error, where the row was mutated but no data changed).
   function reRenderPast(): Promise<void> {
+    confirmActive = false; // clear the freeze so the rebuild below can run
     pastKey = "";
     return refreshPast();
   }

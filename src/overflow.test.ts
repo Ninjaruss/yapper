@@ -49,6 +49,28 @@ describe("createOverflowMenu", () => {
     cleanup();
   });
 
+  it("self-closes when its row is removed from the DOM while open (listener-leak guard)", async () => {
+    // Mirrors setup.ts's 4s poll rebuilding the talk list: the row holding an
+    // open menu is detached without anyone calling close(). Without the
+    // disconnect observer, the capture-phase document click listener would
+    // leak and pin the detached subtree.
+    const row = document.createElement("div");
+    const menu = createOverflowMenu([{ label: "Forget", onSelect: () => {} }]);
+    row.appendChild(menu);
+    document.body.appendChild(row);
+
+    const btn = menu.querySelector<HTMLButtonElement>(".overflow-btn")!;
+    const popover = menu.querySelector<HTMLElement>(".overflow-menu")!;
+    btn.click();
+    expect(btn.getAttribute("aria-expanded")).toBe("true");
+
+    row.remove();
+    await new Promise((r) => setTimeout(r, 0)); // let the MutationObserver fire
+
+    expect(btn.getAttribute("aria-expanded")).toBe("false");
+    expect(popover.hidden).toBe(true);
+  });
+
   it("renders one menuitem per action", () => {
     const menu = createOverflowMenu([
       { label: "Export transcript", onSelect: () => {} },

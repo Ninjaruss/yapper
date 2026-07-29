@@ -15,8 +15,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{Emitter, Manager, State};
 
-use analysis::Signal;
 use analysis::rhythm::ratio_bonus;
+use analysis::Signal;
 use audio::capture::Capture;
 use error::YapperError;
 use insight::worker::{InsightDeps, InsightEvent};
@@ -35,9 +35,12 @@ const INSIGHT_CADENCE_MS: u64 = 45_000;
 const MIN_SPEAKING_MS_FOR_BASELINE: i64 = 120_000;
 
 fn now_ms() -> i64 {
+    // `unwrap_or_default` rather than `unwrap`: a clock set before 1970 makes
+    // `duration_since` return Err, and this runs inside every session command
+    // — better to fall back to 0ms than panic a Tauri handler over a bad clock.
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_millis() as i64
 }
 
@@ -408,6 +411,7 @@ struct SessionStatus {
     state: String,
     elapsed_ms: i64,
     writer_failed: bool,
+    device_failed: bool,
     stt_active: bool,
     stt_failed: bool,
     insight_active: bool,
@@ -430,6 +434,7 @@ fn session_status(state: State<'_, AppState>) -> Result<Option<SessionStatus>, Y
         .to_string(),
         elapsed_ms: s.clock.elapsed_ms(now_ms()),
         writer_failed: s.capture.writer_failed.load(Ordering::Relaxed),
+        device_failed: s.capture.stream_failed.load(Ordering::Relaxed),
         stt_active: s.stt_worker.is_some(),
         stt_failed: s.stt_failed.load(Ordering::Relaxed),
         insight_active: s.insight_worker.is_some(),
@@ -542,9 +547,19 @@ async fn end_session(state: State<'_, AppState>) -> Result<Session, YapperError>
             Ok(flac_path) => {
                 let flac_str = flac_path.to_string_lossy().into_owned();
                 match store_for_encode.set_audio_path(session_id, &flac_str) {
-                    Ok(()) => eprintln!(
+                    Ok(true) => eprintln!(
                         "end_session: compressed session {session_id} audio to {flac_str}"
                     ),
+                    // The session was forgotten while this encode ran, so the
+                    // path swap hit no row. The WAV forget deleted is already
+                    // gone; the FLAC we just wrote would be an orphan — remove
+                    // it so Forget's "leave no trace" contract still holds.
+                    Ok(false) => {
+                        let _ = std::fs::remove_file(&flac_path);
+                        eprintln!(
+                            "end_session: session {session_id} was forgotten mid-encode; discarded orphan {flac_str}"
+                        );
+                    }
                     Err(e) => eprintln!(
                         "end_session: flac encode ok but set_audio_path failed for session {session_id}: {e}"
                     ),
@@ -645,11 +660,17 @@ fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>, YapperError
 fn forget_session(state: State<'_, AppState>, id: i64) -> Result<(), YapperError> {
     let session = state.store.get_session(id)?;
     if let Some(path) = session.audio_path.as_deref() {
-        remove_if_present(std::path::Path::new(path))?;
-        // The in-place transcript exports share the audio file's stem.
+        // Everything that shares the recording's stem: the audio in whichever
+        // container survived (the post-session encode swaps .wav→.flac, and
+        // that swap can still be racing this call — see end_session, which
+        // discards a FLAC written after the row is gone), plus any transcript
+        // exported beside it. All routed through `remove_if_present` so an
+        // already-absent sibling is fine but a real failure (permission denied)
+        // surfaces instead of silently leaving a trace behind.
         let base = std::path::Path::new(path).with_extension("");
-        let _ = std::fs::remove_file(base.with_extension("srt"));
-        let _ = std::fs::remove_file(base.with_extension("txt"));
+        for ext in ["wav", "flac", "srt", "txt"] {
+            remove_if_present(&base.with_extension(ext))?;
+        }
     }
     state.store.delete_session(id)
 }
@@ -661,7 +682,9 @@ fn remove_if_present(path: &std::path::Path) -> Result<(), YapperError> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(YapperError::State(format!("could not delete recording: {e}"))),
+        Err(e) => Err(YapperError::State(format!(
+            "could not delete recording: {e}"
+        ))),
     }
 }
 
@@ -844,10 +867,9 @@ pub fn run() {
     // otherwise silently swallowed without a logger).
     #[cfg(debug_assertions)]
     {
-        let _ = env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or("error"),
-        )
-        .try_init();
+        let _ =
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error"))
+                .try_init();
     }
 
     let mut builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());

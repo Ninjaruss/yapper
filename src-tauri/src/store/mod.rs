@@ -303,7 +303,10 @@ impl SessionStore {
     pub fn get_session(&self, id: i64) -> Result<Session, YapperError> {
         let conn = self.lock_conn()?;
         Ok(conn.query_row(
-            &format!("SELECT {} FROM sessions WHERE id = ?1", Self::SESSION_COLUMNS),
+            &format!(
+                "SELECT {} FROM sessions WHERE id = ?1",
+                Self::SESSION_COLUMNS
+            ),
             params![id],
             Self::row_to_session,
         )?)
@@ -459,13 +462,17 @@ impl SessionStore {
     /// post-session FLAC encode to swap the WAV path for the FLAC path once
     /// compression succeeds. Does not touch any other column (duration,
     /// paused_ms, etc. are unaffected by re-encoding the same timeline).
-    pub fn set_audio_path(&self, id: i64, path: &str) -> Result<(), YapperError> {
+    ///
+    /// Returns `true` if a row was actually updated. `false` means the session
+    /// was deleted (e.g. by `forget_session`) while the encode was still
+    /// running — the caller uses this to clean up the now-orphaned file.
+    pub fn set_audio_path(&self, id: i64, path: &str) -> Result<bool, YapperError> {
         let conn = self.lock_conn()?;
-        conn.execute(
+        let rows = conn.execute(
             "UPDATE sessions SET audio_path = ?2 WHERE id = ?1",
             params![id, path],
         )?;
-        Ok(())
+        Ok(rows > 0)
     }
 
     pub fn replace_outline(
@@ -817,15 +824,34 @@ mod tests {
         let store = open_test_store();
         let id = store.create_session(1000, "").unwrap();
         store.end_session(id, 61_000, "/tmp/a.wav", 0).unwrap();
-        assert_eq!(store.get_session(id).unwrap().audio_path.as_deref(), Some("/tmp/a.wav"));
+        assert_eq!(
+            store.get_session(id).unwrap().audio_path.as_deref(),
+            Some("/tmp/a.wav")
+        );
 
-        store.set_audio_path(id, "/tmp/a.flac").unwrap();
+        assert!(
+            store.set_audio_path(id, "/tmp/a.flac").unwrap(),
+            "row exists → updated"
+        );
 
         let s = store.get_session(id).unwrap();
         assert_eq!(s.audio_path.as_deref(), Some("/tmp/a.flac"));
         // Other end_session-written fields are untouched by the swap.
         assert_eq!(s.ended_at_ms, Some(61_000));
         assert_eq!(s.duration_ms, Some(60_000));
+    }
+
+    #[test]
+    fn set_audio_path_reports_missing_row() {
+        // The encode thread relies on this `false` to detect a session that
+        // was forgotten mid-encode, so it can delete the orphaned FLAC.
+        let store = open_test_store();
+        let id = store.create_session(1000, "").unwrap();
+        store.delete_session(id).unwrap();
+        assert!(
+            !store.set_audio_path(id, "/tmp/gone.flac").unwrap(),
+            "no row → not updated"
+        );
     }
 
     #[test]
@@ -862,12 +888,8 @@ mod tests {
         assert_eq!(store.count_wrong_feedback("repetition").unwrap(), 0);
 
         // Mark some as wrong: both filler events + one pace event
-        store
-            .set_event_feedback(filler_event_1, "wrong")
-            .unwrap();
-        store
-            .set_event_feedback(filler_event_2, "wrong")
-            .unwrap();
+        store.set_event_feedback(filler_event_1, "wrong").unwrap();
+        store.set_event_feedback(filler_event_2, "wrong").unwrap();
         store.set_event_feedback(pace_event_1, "wrong").unwrap();
 
         // Verify counts per kind, including non-existent kinds
@@ -888,9 +910,7 @@ mod tests {
         );
 
         // Mark the second pace event as wrong
-        store
-            .set_event_feedback(pace_event_2, "wrong")
-            .unwrap();
+        store.set_event_feedback(pace_event_2, "wrong").unwrap();
         assert_eq!(
             store.count_wrong_feedback("rhythm_pace").unwrap(),
             2,
