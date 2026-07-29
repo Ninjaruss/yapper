@@ -8,6 +8,8 @@
 <meta property="og:title" content="Yapper" />
 <meta property="og:description" content="A quiet desk for practicing talks out loud. Local-first, private, no account." />
 <meta property="og:type" content="website" />
+<meta name="theme-color" content="#2b2114" />
+<meta name="color-scheme" content="dark" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%232b2114'/%3E%3Cpath d='M40 78 Q30 55 46 38 Q54 29 55 16 Q62 30 74 40 Q88 54 82 70 Q76 84 55 86 Q46 84 40 78 Z' fill='%23ffcf24'/%3E%3Cpath d='M48 72 Q42 54 52 40 Q56 34 57 28 Q62 38 68 46 Q76 58 70 70 Q66 78 57 78 Q51 78 48 72 Z' fill='%23fff6c8'/%3E%3C/svg%3E" />
 <style>
   :root{
@@ -35,6 +37,15 @@
     content:""; position:fixed; inset:0; pointer-events:none; z-index:0; opacity:.05;
     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
   }
+  /* edge vignette — the room falls into shadow away from the one flame,
+     which sits high and to the right (matches the desk-glow origin) */
+  body::after{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:radial-gradient(125% 105% at 70% 34%, transparent 52%, rgba(9,6,2,.42) 88%, rgba(9,6,2,.62));
+  }
+
+  /* a candlelit page picks up warm ink on selection, not system blue */
+  ::selection{background:rgba(217,169,46,.32); color:var(--ink);}
 
   .desk{position:relative; z-index:1; max-width:940px; margin:0 auto; padding:7vh 24px 40px;}
 
@@ -51,12 +62,23 @@
     background:radial-gradient(80% 60% at 78% -8%, rgba(255,224,120,.22), transparent 60%);
     mix-blend-mode:soft-light;
   }
+  /* a second sheet peeking out beneath the first — a small tactile tell that
+     this is a stack of paper on a desk, not a flat card */
+  .sheet::after{
+    content:""; position:absolute; z-index:-1; inset:14px -7px -11px 9px;
+    background:linear-gradient(158deg, var(--paper-deep), var(--paper-edge));
+    border-radius:2px; transform:rotate(-.55deg);
+    box-shadow:0 16px 38px -16px rgba(0,0,0,.5);
+  }
   .sheet > *{position:relative;}
 
   header{display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:30px;}
   .wordmark{
     font-size:1.5rem; letter-spacing:.30em; text-transform:uppercase; font-weight:600;
     color:var(--gold-ink); margin:6px 0 0;
+    /* letterpress: a hair of highlight below, a whisper of shadow above,
+       as if the word were pressed into the paper */
+    text-shadow:0 1px 0 rgba(255,249,225,.55), 0 -1px 0 rgba(90,66,20,.12);
   }
   .label{
     font-family:var(--mono); font-size:.64rem; letter-spacing:.24em; text-transform:uppercase;
@@ -89,12 +111,20 @@
 
   .get{margin:0 0 6px;}
   .btn{
-    display:inline-block; font-family:var(--serif); font-size:1.05rem; font-weight:600;
+    position:relative; display:inline-block; font-family:var(--serif); font-size:1.05rem; font-weight:600;
     background:var(--gold); color:#3a2f14; text-decoration:none;
     padding:13px 28px; border-radius:2px; border:1px solid rgba(90,66,20,.25);
     box-shadow:0 3px 0 rgba(90,66,20,.28), 0 6px 16px rgba(0,0,0,.2);
     transition:transform .12s ease, background .18s ease, box-shadow .12s ease;
   }
+  /* the one warm thing on the page catches the candlelight: a soft glow
+     pools behind the button and breathes in time with the flame's aura */
+  .btn::before{
+    content:""; position:absolute; z-index:-1; inset:-9px -16px;
+    border-radius:8px; opacity:.45; transition:opacity .18s ease;
+    background:radial-gradient(closest-side, rgba(255,206,60,.5), transparent 78%);
+  }
+  .btn:hover::before{opacity:.8;}
   .btn:hover{background:var(--gold-bright); transform:translateY(-1px); box-shadow:0 4px 0 rgba(90,66,20,.28), 0 9px 20px rgba(0,0,0,.25);}
   .btn:active{transform:translateY(1px); box-shadow:0 2px 0 rgba(90,66,20,.28);}
   .btn:focus-visible{outline:2px solid var(--gold-ink); outline-offset:3px;}
@@ -105,8 +135,11 @@
 
   .firstrun{margin:16px 0 0; font-size:.9rem; color:var(--ink-soft);}
   .firstrun code{
+    /* its own line, and a scroll-in-place snippet on narrow screens so the
+       one-line command stays intact-and-copyable without overflowing the page */
+    display:block; margin-top:7px; max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch;
     font-family:var(--mono); font-size:.8rem; background:rgba(90,66,20,.10);
-    border:1px solid rgba(90,66,20,.16); border-radius:3px; padding:2px 7px; color:var(--gold-ink);
+    border:1px solid rgba(90,66,20,.16); border-radius:3px; padding:7px 9px; color:var(--gold-ink);
     white-space:nowrap;
   }
 
@@ -133,6 +166,11 @@
     @keyframes wisp-sway{0%,100%{transform:rotate(-2.5deg) translateY(0);} 50%{transform:rotate(2deg) translateY(-5px);}}
     @keyframes wisp-flick{0%,100%{transform:scale(1,1); opacity:.95;} 50%{transform:scale(.96,1.05); opacity:1;}}
     @keyframes wisp-aura{0%,100%{opacity:.5;} 50%{opacity:.85;}}
+
+    /* the CTA glow breathes on the same 3s clock as the flame's aura, so the
+       button reads as lit by the candle rather than glowing on its own */
+    .btn:not(:hover)::before{animation:cta-breathe 3s ease-in-out infinite;}
+    @keyframes cta-breathe{0%,100%{opacity:.32;} 50%{opacity:.6;}}
 
     /* page-load stagger for the sheet's contents */
     .sheet > *{opacity:0; transform:translateY(8px); animation:rise .7s cubic-bezier(.2,.7,.3,1) forwards;}
