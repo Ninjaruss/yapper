@@ -129,9 +129,15 @@ jobs:
           # LD_LIBRARY_PATH (set above on Linux) lets linuxdeploy resolve sherpa's
           # .so. APPIMAGE_EXTRACT_AND_RUN keeps the AppImage tools off FUSE.
           APPIMAGE_EXTRACT_AND_RUN: "1"
+          # Updater signing — produces the .sig files + latest.json so the
+          # self-updater can verify and install this build. Password is empty.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "Yapper ${{ github.event.inputs.tag || github.ref_name }}"
           releaseDraft: false
           prerelease: false
+          # includeUpdaterJson merges this run's platforms into latest.json.
+          includeUpdaterJson: true
           args: ${{ matrix.args }}

@@ -243,7 +243,6 @@ fn run_insight_pass(
     apply_shine(store, session_id, elapsed_ms, state, event_tx, update.shine);
 }
 
-
 /// A non-empty outline that differs from the current in-memory snapshot is
 /// a full-replacement persist + publish; an empty or unchanged outline is a
 /// no-op (the model has nothing new to say this pass).
@@ -669,10 +668,16 @@ mod tests {
         ];
         let engine = Box::new(MockInsight::new(script));
         let handle = spawn_insight_worker(
-            engine, rx, deps(store.clone(), sid, ""), event_tx, insight_failed.clone(), 50,
+            engine,
+            rx,
+            deps(store.clone(), sid, ""),
+            event_tx,
+            insight_failed.clone(),
+            50,
         );
 
-        tx.send((1, seg(65_000, "talking about the empty apartment"))).unwrap();
+        tx.send((1, seg(65_000, "talking about the empty apartment")))
+            .unwrap();
         drop(tx);
         join_with_watchdog(handle);
 
@@ -681,7 +686,11 @@ mod tests {
             .filter(|e| matches!(e, InsightEvent::Question(_)))
             .count();
         assert_eq!(question_events, 0, "ungrounded question must not surface");
-        assert!(store.list_events(sid).unwrap().iter().all(|e| e.kind != "question"));
+        assert!(store
+            .list_events(sid)
+            .unwrap()
+            .iter()
+            .all(|e| e.kind != "question"));
     }
 
     #[test]
@@ -697,10 +706,16 @@ mod tests {
         ];
         let engine = Box::new(MockInsight::new(script));
         let handle = spawn_insight_worker(
-            engine, rx, deps(store.clone(), sid, ""), event_tx, insight_failed.clone(), 50,
+            engine,
+            rx,
+            deps(store.clone(), sid, ""),
+            event_tx,
+            insight_failed.clone(),
+            50,
         );
 
-        tx.send((1, seg(65_000, "talking about the empty apartment"))).unwrap();
+        tx.send((1, seg(65_000, "talking about the empty apartment")))
+            .unwrap();
         drop(tx);
         join_with_watchdog(handle);
 
@@ -725,7 +740,12 @@ mod tests {
         ];
         let engine = Box::new(MockInsight::new(script));
         let handle = spawn_insight_worker(
-            engine, rx, deps(store.clone(), sid, ""), event_tx, insight_failed.clone(), 50,
+            engine,
+            rx,
+            deps(store.clone(), sid, ""),
+            event_tx,
+            insight_failed.clone(),
+            50,
         );
 
         tx.send((1, seg(65_000, "one"))).unwrap();
@@ -737,8 +757,14 @@ mod tests {
 
         let outline = store.list_outline(sid).unwrap();
         assert_eq!(outline.len(), 1);
-        assert_eq!(outline[0].label, "Moving to Austin", "label text must survive the rename");
-        assert_eq!(outline[0].status, "covered", "status change must still apply");
+        assert_eq!(
+            outline[0].label, "Moving to Austin",
+            "label text must survive the rename"
+        );
+        assert_eq!(
+            outline[0].status, "covered",
+            "status change must still apply"
+        );
 
         // Both passes changed something (status), so two Outline events is
         // fine — what matters is the label never changed.

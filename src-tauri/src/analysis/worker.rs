@@ -118,7 +118,15 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded::<(i64, Segment)>();
         let (signal_tx, signal_rx) = crossbeam_channel::unbounded::<Signal>();
 
-        let handle = spawn_analysis_worker(rx, store.clone(), session_id, Some(base()), signal_tx, 0.0, 0.0);
+        let handle = spawn_analysis_worker(
+            rx,
+            store.clone(),
+            session_id,
+            Some(base()),
+            signal_tx,
+            0.0,
+            0.0,
+        );
 
         // Calm dense history: distinct 10-word, filler-free segments spaced
         // 5s apart, establishing >=30 words / >=20s span in the rhythm
@@ -191,7 +199,8 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded::<(i64, Segment)>();
         let (signal_tx, _signal_rx) = crossbeam_channel::unbounded::<Signal>();
 
-        let handle = spawn_analysis_worker(rx, store.clone(), session_id, None, signal_tx, 0.0, 0.0);
+        let handle =
+            spawn_analysis_worker(rx, store.clone(), session_id, None, signal_tx, 0.0, 0.0);
 
         let texts = [
             "um so I think this is fine yes",

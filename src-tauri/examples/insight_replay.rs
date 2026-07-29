@@ -41,7 +41,9 @@ fn parse_fixture(text: &str) -> (String, Vec<(i64, String)>) {
         if !line.starts_with('[') {
             continue;
         }
-        let Some(close) = line.find(']') else { continue };
+        let Some(close) = line.find(']') else {
+            continue;
+        };
         // Safe to slice at byte 1: `starts_with('[')` guarantees the first
         // byte is the single-byte ASCII '['.
         let stamp = &line[1..close];
@@ -74,7 +76,10 @@ fn print_outline_diff(old: &[OutlineEntry], new: &[OutlineEntry]) {
             Some(_) => {}
         }
     }
-    for gone in old.iter().filter(|o| !new.iter().any(|n| n.label == o.label)) {
+    for gone in old
+        .iter()
+        .filter(|o| !new.iter().any(|n| n.label == o.label))
+    {
         println!("  outline - {:?} (dropped by model)", gone.label);
     }
 }
@@ -206,7 +211,10 @@ fn main() {
             .cloned()
             .collect();
 
-        println!("\n── pass · {} ──────────────────────────", fmt_mmss(elapsed_ms));
+        println!(
+            "\n── pass · {} ──────────────────────────",
+            fmt_mmss(elapsed_ms)
+        );
         run_pass(
             &mut engine,
             &intent,

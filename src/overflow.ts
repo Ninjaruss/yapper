@@ -1,0 +1,102 @@
+// A "⋯" overflow menu — tucks a row's secondary actions behind one control so
+// the row reads clean (used by Setup's past-talk rows for Export / Show file /
+// Forget). Keyboard-accessible (arrow keys move between items; Escape closes and
+// returns focus to the trigger); closes on outside click. Labels are trusted
+// static strings.
+
+export interface OverflowItem {
+  label: string;
+  onSelect: () => void;
+}
+
+export function createOverflowMenu(items: OverflowItem[], ariaLabel = "More actions"): HTMLElement {
+  const root = document.createElement("div");
+  root.className = "overflow";
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "overflow-btn";
+  btn.textContent = "⋯";
+  btn.setAttribute("aria-haspopup", "menu");
+  btn.setAttribute("aria-expanded", "false");
+  btn.setAttribute("aria-label", ariaLabel);
+
+  const menu = document.createElement("div");
+  menu.className = "overflow-menu";
+  menu.setAttribute("role", "menu");
+  menu.hidden = true;
+
+  const itemEls = items.map((item) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "overflow-item";
+    b.setAttribute("role", "menuitem");
+    b.tabIndex = -1;
+    b.textContent = item.label;
+    b.addEventListener("click", () => {
+      close();
+      item.onSelect();
+    });
+    menu.appendChild(b);
+    return b;
+  });
+
+  let open = false;
+  // Watches for this menu's own removal from the DOM while open — see openMenu.
+  let disconnectObserver: MutationObserver | null = null;
+  const onDocClick = (e: MouseEvent) => {
+    if (!root.contains(e.target as Node)) close();
+  };
+
+  function openMenu() {
+    if (open) return;
+    open = true;
+    menu.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    document.addEventListener("click", onDocClick, true);
+    // A background re-render (e.g. setup.ts's 4s poll rebuilding the talk
+    // list) can rip this menu's row out of the DOM while it's still open. That
+    // path never calls close(), so without this the capture-phase document
+    // listener would leak and pin the detached subtree. Watch for our own
+    // disconnection and self-close, which tears the listener down.
+    disconnectObserver = new MutationObserver(() => {
+      if (!root.isConnected) close();
+    });
+    disconnectObserver.observe(document.body, { childList: true, subtree: true });
+    itemEls[0]?.focus();
+  }
+  function close() {
+    if (!open) return;
+    open = false;
+    menu.hidden = true;
+    btn.setAttribute("aria-expanded", "false");
+    document.removeEventListener("click", onDocClick, true);
+    disconnectObserver?.disconnect();
+    disconnectObserver = null;
+  }
+
+  btn.addEventListener("click", () => (open ? close() : openMenu()));
+
+  root.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (open) {
+        e.preventDefault();
+        close();
+        btn.focus();
+      }
+      return;
+    }
+    if (!open) return;
+    const i = itemEls.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      itemEls[(i + 1 + itemEls.length) % itemEls.length]?.focus();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      itemEls[(i - 1 + itemEls.length) % itemEls.length]?.focus();
+    }
+  });
+
+  root.append(btn, menu);
+  return root;
+}

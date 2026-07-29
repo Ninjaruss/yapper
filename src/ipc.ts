@@ -26,6 +26,7 @@ export interface SessionStatus {
   state: "recording" | "paused" | "ended";
   elapsed_ms: number;
   writer_failed: boolean;
+  device_failed: boolean;
   stt_active: boolean;
   stt_failed: boolean;
   insight_active: boolean;

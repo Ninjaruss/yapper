@@ -2,6 +2,10 @@ import { ipc, type InputDevice, type Session } from "../ipc";
 import { escapeHtml } from "../escape";
 import { fmtDate, fmtDuration } from "../format";
 import { createWisp } from "../wisp";
+import { createDisclosure } from "../disclosure";
+import { createOverflowMenu } from "../overflow";
+import { autoUpdateEnabled, setAutoUpdate, currentVersion, checkForUpdate, installAndRelaunch } from "../updater";
+import type { Update } from "@tauri-apps/plugin-updater";
 import { PRESENCE_HINTS, loadPresence, savePresence, type Presence } from "../presence";
 import {
   DEFAULT_KEYBINDS,
@@ -40,35 +44,46 @@ export function renderSetup(
   modelReadyUnlisten?.();
   modelReadyUnlisten = null;
 
+  // Decluttered layout: one hero (mic + intent + Begin) leads; Past talks
+  // follow; everything set-once (keys, companion, over-time) folds into a
+  // single collapsed Settings disclosure built below.
   root.innerHTML = `
-    <div class="setup-header">
-      <h1>Yapper</h1>
-      <aside id="setupWisp" aria-label="companion"></aside>
-    </div>
-    <div class="paper-panel">
+    <h1 class="setup-wordmark">Yapper</h1>
+    <div id="updateBanner"></div>
+    <div class="setup-top">
+      <div class="paper-panel setup-hero">
       <div class="label">Microphone</div>
-      <select id="mic"></select>
-      <div class="level-meter" style="margin-top:10px"><div id="meter"></div></div>
-      <div class="label" style="margin-top:18px">Intent — a title, or paste your whole notes</div>
-      <textarea id="intent" rows="4" placeholder="what do you want to talk about?"></textarea>
+      <div class="mic-row">
+        <select id="mic"></select>
+        <div class="level-meter"><div id="meter"></div></div>
+      </div>
+      <div class="label intent-label">What do you want to talk about?</div>
+      <textarea id="intent" rows="4" placeholder="a title, or paste your whole notes…"></textarea>
       <p id="focusLine" class="focus-line" style="display:none;"></p>
-      <div style="margin-top:16px; display:flex; gap:10px;">
+      <div class="begin-row">
         <button id="start">Begin the talk</button>
       </div>
       <p id="error" class="paused-note" role="alert"></p>
+      </div>
+      <aside class="setup-wisp-col"><div id="setupWisp" aria-label="companion"></div></aside>
     </div>
     <div id="modelBanner"></div>
     <div id="past" style="margin-top:22px;"></div>
-    <div id="trend"></div>
-    <div class="paper-panel" style="margin-top:22px; padding:14px 16px;">
-      <div class="label" style="margin-bottom:8px;">Keys</div>
+    <div id="settings" class="paper-panel settings-panel"></div>
+  `;
+
+  // ---- Settings disclosure: keys + companion + over-time, folded away ----
+  const settings = createDisclosure({ label: "Settings", gear: true });
+  settings.body.innerHTML = `
+    <div class="settings-group">
+      <div class="label">Keys</div>
       <div class="key-row"><span>Begin / end the talk</span><kbd id="kbdStartEnd"></kbd><button class="quiet key-change" data-bind="startEnd">change</button></div>
       <div class="key-row"><span>Pause / resume listening</span><kbd id="kbdPause"></kbd><button class="quiet key-change" data-bind="pause">change</button></div>
       <p class="label key-hint" id="keyHint"></p>
       <button class="quiet key-reset" id="keysReset">reset to defaults</button>
     </div>
-    <div class="paper-panel" style="margin-top:22px; padding:14px 16px;">
-      <div class="label" style="margin-bottom:8px;">Companion</div>
+    <div class="settings-group">
+      <div class="label">Companion</div>
       <div class="presence-row" role="radiogroup" aria-label="Companion presence">
         <button class="quiet presence-opt" data-presence="present" role="radio">present</button>
         <button class="quiet presence-opt" data-presence="quieter" role="radio">quieter</button>
@@ -76,7 +91,27 @@ export function renderSetup(
       </div>
       <p class="label key-hint" id="presenceHint"></p>
     </div>
+    <div class="settings-group" id="trendGroup" style="display:none;">
+      <div class="label">Over time</div>
+      <div id="trend"></div>
+    </div>
+    <div class="settings-group">
+      <div class="label">Updates</div>
+      <div class="key-row">
+        <span>Automatically check for updates</span>
+        <span class="seg" role="radiogroup" aria-label="auto-update">
+          <button class="quiet upd-opt" data-auto="on" role="radio">on</button>
+          <button class="quiet upd-opt" data-auto="off" role="radio">off</button>
+        </span>
+      </div>
+      <div class="key-row">
+        <span id="versionLine">Current version …</span>
+        <button class="quiet" id="checkUpdateBtn">Check now</button>
+      </div>
+      <p class="label key-hint" id="updateHint"></p>
+    </div>
   `;
+  root.querySelector<HTMLElement>("#settings")!.appendChild(settings.el);
 
   // The companion is present at the desk even before a talk — asleep, a
   // pilot light. The live screen's wisp wakes fresh; this one just sleeps.
@@ -226,7 +261,7 @@ export function renderSetup(
   // Sentinel (not "") so the very first refresh always renders — an empty
   // device list has key "", which would otherwise match the initial value
   // and skip drawing the placeholder.
-  let deviceKey = " ";
+  let deviceKey = "\uffff";
   async function refreshDevices(): Promise<void> {
     const devices: InputDevice[] = await ipc.listInputDevices();
     const key = devices.map((d) => `${d.name}${d.is_default ? "*" : ""}`).join("|");
@@ -249,7 +284,12 @@ export function renderSetup(
   }
 
   let pastKey = "";
+  // True while a row's inline "delete for good?" strip is showing. The 4s
+  // poll must not rebuild the list underneath it (that would silently discard
+  // the pending confirmation), so refreshPast bails out while it's set.
+  let confirmActive = false;
   async function refreshPast(): Promise<void> {
+    if (confirmActive) return;
     const sessions: Session[] = await ipc.listSessions();
 
     // The trend panel reuses this same fetch (no extra ipc round-trip) and
@@ -263,67 +303,131 @@ export function renderSetup(
       .join("|");
     if (key === pastKey) return;
     pastKey = key;
-    if (sessions.length === 0) {
-      pastEl.innerHTML = "";
-      return;
+    pastEl.innerHTML = "";
+    if (sessions.length === 0) return;
+
+    const header = document.createElement("div");
+    header.className = "label on-desk";
+    header.style.marginBottom = "8px";
+    header.textContent = "Past talks";
+    pastEl.appendChild(header);
+
+    // Compact rows: date · duration · intent · a primary Recap chip, with the
+    // rarely-used actions (Export, Show file / Forget) folded into an overflow
+    // menu so the row stays legible. textContent throughout — intent is raw
+    // user speech and must never parse as markup.
+    for (const s of sessions) {
+      const row = document.createElement("div");
+      row.className = "talk-row paper-panel";
+      row.dataset.sessionId = String(s.id);
+
+      const date = document.createElement("span");
+      date.className = "talk-date";
+      date.textContent = fmtDate(s.started_at_ms);
+      const dur = document.createElement("span");
+      dur.className = "talk-dur";
+      dur.textContent = s.duration_ms != null ? fmtDuration(s.duration_ms) : "interrupted";
+      const intent = document.createElement("span");
+      intent.className = "talk-intent";
+      intent.textContent = s.intent.trim().split("\n")[0].slice(0, 80);
+      row.append(date, dur, intent);
+
+      if (!s.audio_exists) {
+        const missing = document.createElement("span");
+        missing.className = "talk-missing";
+        missing.textContent = "file missing";
+        row.appendChild(missing);
+      }
+
+      if (s.duration_ms != null) {
+        const recap = document.createElement("button");
+        recap.className = "talk-recap";
+        recap.textContent = "Recap";
+        recap.onclick = () => {
+          const session = sessions.find((x) => x.id === s.id);
+          if (!session) return;
+          // Same cleanup onStarted runs — recap fully replaces this screen.
+          cleanup();
+          onRecap(session);
+        };
+        row.appendChild(recap);
+      }
+
+      const items = [];
+      if (s.segment_count > 0) {
+        items.push({
+          label: "Export transcript",
+          onSelect: () =>
+            ipc.exportTranscript(s.id).catch((e) => { errorEl.textContent = String(e); }),
+        });
+      }
+      if (s.audio_exists) {
+        items.push({
+          label: "Show file",
+          onSelect: () =>
+            ipc.revealSession(s.id).catch((e) => {
+              errorEl.textContent = String(e);
+              void refreshPast(); // file may have vanished since last poll
+            }),
+        });
+      }
+      // Forget deletes the recording and transcript for good — always offered,
+      // gated behind an inline confirm since it can't be undone.
+      items.push({
+        label: "Forget",
+        onSelect: () => confirmForget(row, s.id),
+      });
+      if (items.length) row.appendChild(createOverflowMenu(items));
+
+      pastEl.appendChild(row);
     }
-    pastEl.innerHTML = `
-      <div class="label on-desk" style="margin-bottom:8px;">Past talks</div>
-      ${sessions
-        .map((s) => {
-          const dur = s.duration_ms != null ? fmtDuration(s.duration_ms) : "interrupted";
-          const intent = s.intent.trim().split("\n")[0].slice(0, 60);
-          const fileUi = s.audio_exists
-            ? `<button class="quiet reveal" data-id="${s.id}" style="padding:6px 12px; font-size:0.85rem;">Show file</button>`
-            : `<span style="font-style:italic; color:var(--ember); font-size:0.85rem;">file missing</span>
-               <button class="quiet forget" data-id="${s.id}" style="padding:6px 12px; font-size:0.85rem;">Forget</button>`;
-          const exportUi = s.segment_count > 0
-            ? `<button class="quiet export" data-id="${s.id}" style="padding:6px 12px; font-size:0.85rem;">Export transcript</button>`
-            : "";
-          const recapUi = s.duration_ms != null
-            ? `<button class="quiet recap" data-id="${s.id}" style="padding:6px 12px; font-size:0.85rem;">Recap</button>`
-            : "";
-          return `
-            <div class="paper-panel" style="display:flex; align-items:center; gap:14px; padding:10px 16px; margin-bottom:8px;">
-              <span style="font-family:var(--mono); color:var(--ink-soft); min-width:110px;">${fmtDate(s.started_at_ms)}</span>
-              <span style="font-family:var(--mono); min-width:56px;">${dur}</span>
-              <span style="flex:1; font-style:italic; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(intent)}</span>
-              ${recapUi}
-              ${exportUi}
-              ${fileUi}
-            </div>`;
-        })
-        .join("")}
-    `;
-    pastEl.querySelectorAll<HTMLButtonElement>("button.reveal").forEach((btn) => {
-      btn.onclick = () =>
-        ipc.revealSession(Number(btn.dataset.id)).catch((e) => {
-          errorEl.textContent = String(e);
-          void refreshPast(); // file may have vanished since last poll
-        });
-    });
-    pastEl.querySelectorAll<HTMLButtonElement>("button.forget").forEach((btn) => {
-      btn.onclick = () =>
-        ipc.forgetSession(Number(btn.dataset.id))
-          .then(() => refreshPast())
-          .catch((e) => { errorEl.textContent = String(e); });
-    });
-    pastEl.querySelectorAll<HTMLButtonElement>("button.export").forEach((btn) => {
-      btn.onclick = () =>
-        ipc.exportTranscript(Number(btn.dataset.id)).catch((e) => {
-          errorEl.textContent = String(e);
-        });
-    });
-    pastEl.querySelectorAll<HTMLButtonElement>("button.recap").forEach((btn) => {
-      btn.onclick = () => {
-        const session = sessions.find((s) => s.id === Number(btn.dataset.id));
-        if (!session) return;
-        // Same cleanup this screen runs before onStarted — the recap screen
-        // fully replaces this one, so its timers/listeners must stop too.
-        cleanup();
-        onRecap(session);
-      };
-    });
+  }
+
+  // Replace a talk row in place with a "delete for good?" strip. Confirming
+  // deletes the recording + transcript; cancelling re-renders the list (forced
+  // past the pastKey guard, since nothing on the server changed).
+  function confirmForget(row: HTMLElement, id: number): void {
+    confirmActive = true; // freeze the poll so it can't rebuild this row away
+    row.innerHTML = "";
+    row.classList.add("talk-confirm");
+
+    const msg = document.createElement("span");
+    msg.className = "talk-intent";
+    msg.textContent = "Delete this talk's recording and transcript? This can't be undone.";
+
+    const del = document.createElement("button");
+    del.className = "talk-recap danger";
+    del.textContent = "Delete";
+    del.onclick = () => {
+      confirmActive = false;
+      ipc.forgetSession(id).then(() => refreshPast()).catch((e) => {
+        errorEl.textContent = String(e);
+        void reRenderPast();
+      });
+    };
+
+    const cancel = document.createElement("button");
+    cancel.className = "quiet";
+    cancel.textContent = "Cancel";
+    // Rebuild the list, then hand keyboard focus back to the row's ⋯ trigger
+    // so a keyboard user isn't dropped onto <body>.
+    cancel.onclick = () =>
+      void reRenderPast().then(() => {
+        pastEl
+          .querySelector<HTMLButtonElement>(`[data-session-id="${id}"] .overflow-btn`)
+          ?.focus();
+      });
+
+    row.append(msg, del, cancel);
+    del.focus();
+  }
+
+  // Force refreshPast to rebuild even when the session list is byte-identical
+  // (used after cancel/error, where the row was mutated but no data changed).
+  function reRenderPast(): Promise<void> {
+    confirmActive = false; // clear the freeze so the rebuild below can run
+    pastKey = "";
+    return refreshPast();
   }
 
   // "Over time": fillers-per-speaking-minute per completed talk, oldest to
@@ -388,17 +492,17 @@ export function renderSetup(
     const key = points.map((p) => `${p.id}:${p.fpm}`).join("|");
     if (key === trendKey) return;
     trendKey = key;
+    // The sparkline lives inside the Settings disclosure (#trendGroup already
+    // carries the "Over time" label). Hide the whole group when there aren't
+    // enough points rather than showing a lonely dot.
+    const group = root.querySelector<HTMLElement>("#trendGroup");
     if (points.length < MIN_TREND_POINTS) {
+      if (group) group.style.display = "none";
       trendEl.innerHTML = "";
       return;
     }
-    trendEl.innerHTML = `
-      <div class="paper-panel" style="margin-top:22px; padding:14px 16px;">
-        <div class="label" style="margin-bottom:8px;">Over time</div>
-        ${renderSparkline(points)}
-        <p class="label" style="margin-top:6px; margin-bottom:0;">fillers per minute, by talk</p>
-      </div>
-    `;
+    if (group) group.style.display = "";
+    trendEl.innerHTML = `${renderSparkline(points)}<p class="label" style="margin-top:6px; margin-bottom:0;">fillers per minute, by talk</p>`;
   }
 
   // ---- Keys panel: show current binds, capture replacements, persist ----
@@ -508,6 +612,69 @@ export function renderSetup(
       next.focus();
     };
   });
+
+  // ---- Updates: auto-check on launch (toggled here), manual "Check now", and
+  // an "update available" banner with one-click download + install + relaunch.
+  // All best-effort — a failed/absent check just leaves the desk as-is. ----
+  const updateBannerEl = root.querySelector<HTMLElement>("#updateBanner")!;
+  const updHintEl = root.querySelector<HTMLElement>("#updateHint")!;
+  const versionLineEl = root.querySelector<HTMLElement>("#versionLine")!;
+  const autoButtons = root.querySelectorAll<HTMLButtonElement>("button.upd-opt");
+  currentVersion().then((v) => {
+    versionLineEl.textContent = v ? `Current version ${v}` : "Current version —";
+  });
+  const renderAuto = () => {
+    const on = autoUpdateEnabled();
+    autoButtons.forEach((b) => {
+      const active = (b.dataset.auto === "on") === on;
+      b.classList.toggle("selected", active);
+      b.setAttribute("aria-checked", String(active));
+    });
+  };
+  renderAuto();
+  autoButtons.forEach((b) => {
+    b.onclick = () => {
+      setAutoUpdate(b.dataset.auto === "on");
+      renderAuto();
+    };
+  });
+
+  const showUpdate = (update: Update) => {
+    updateBannerEl.innerHTML = "";
+    const panel = document.createElement("div");
+    panel.className = "paper-panel update-banner";
+    const text = document.createElement("span");
+    text.className = "update-text";
+    text.textContent = `Yapper ${update.version} is ready`;
+    const btn = document.createElement("button");
+    btn.textContent = "Update & restart";
+    btn.onclick = () => {
+      btn.disabled = true;
+      btn.textContent = "Downloading…";
+      installAndRelaunch(update, (done, total) => {
+        btn.textContent = total ? `Downloading… ${Math.round((done / total) * 100)}%` : "Downloading…";
+      }).catch((e) => {
+        btn.disabled = false;
+        btn.textContent = "Update & restart";
+        updHintEl.textContent = `update failed — ${String(e)}`;
+      });
+    };
+    panel.append(text, btn);
+    updateBannerEl.appendChild(panel);
+  };
+  const runCheck = (manual: boolean) => {
+    if (manual) updHintEl.textContent = "checking…";
+    checkForUpdate().then((update) => {
+      if (update) {
+        showUpdate(update);
+        if (manual) updHintEl.textContent = `version ${update.version} is ready — see the notice up top`;
+      } else if (manual) {
+        updHintEl.textContent = "you're on the latest version";
+      }
+    });
+  };
+  root.querySelector<HTMLButtonElement>("#checkUpdateBtn")!.onclick = () => runCheck(true);
+  if (autoUpdateEnabled()) runCheck(false);
 
   // Start-the-talk hotkey. Deliberately no typing-target guard: pressing
   // ⌘/Ctrl+Enter straight from the intent textarea is the natural flow.

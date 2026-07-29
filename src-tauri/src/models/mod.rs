@@ -287,18 +287,19 @@ fn download_to_file(
         }
         match resume_decision(existing_len, status.as_u16()) {
             ResumeAction::Append => {
-                let file = std::fs::OpenOptions::new().append(true).open(dest).map_err(|e| {
-                    YapperError::Audio(format!(
-                        "model download failed: could not reopen file to resume: {e}"
-                    ))
-                })?;
+                let file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(dest)
+                    .map_err(|e| {
+                        YapperError::Audio(format!(
+                            "model download failed: could not reopen file to resume: {e}"
+                        ))
+                    })?;
                 (response, file, existing_len)
             }
             ResumeAction::Restart => {
                 let file = std::fs::File::create(dest).map_err(|e| {
-                    YapperError::Audio(format!(
-                        "model download failed: could not create file: {e}"
-                    ))
+                    YapperError::Audio(format!("model download failed: could not create file: {e}"))
                 })?;
                 (response, file, 0)
             }
@@ -349,6 +350,17 @@ fn download_to_file(
             since_last_emit = 0;
             on_progress(downloaded, total);
         }
+    }
+    // A connection that ends cleanly but early (proxy/CDN dropping the body)
+    // reads as EOF, leaving a short-but-nonempty file that would otherwise
+    // pass the `exists && len > 0` presence check and be treated as installed
+    // forever — only to fail later at model load. When the server told us the
+    // expected size, insist we got all of it. The partial stays on disk so the
+    // Range-resume path can finish it on the next attempt.
+    if total > 0 && downloaded != total {
+        return Err(YapperError::Audio(format!(
+            "model download incomplete: received {downloaded} of {total} bytes"
+        )));
     }
     on_progress(downloaded, total);
     Ok(())

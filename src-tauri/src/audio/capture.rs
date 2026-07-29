@@ -126,6 +126,12 @@ pub struct Capture {
     /// Set by the writer thread if a WAV I/O error occurs mid-session
     /// (e.g. disk full). The UI can poll this instead of joining.
     pub writer_failed: Arc<AtomicBool>,
+    /// Set by the cpal stream's error callback if the device faults
+    /// mid-session (e.g. the mic is unplugged or a Bluetooth link drops).
+    /// cpal then stops delivering buffers, so without this flag the UI would
+    /// keep showing a healthy recording while nothing is captured — the UI
+    /// polls this the same way it polls `writer_failed`.
+    pub stream_failed: Arc<AtomicBool>,
     buffer_tx: Option<Sender<Vec<f32>>>,
     /// The original (outer) tee sender, kept alive on `Capture` itself so
     /// `stop()` can send an explicit shutdown sentinel — mirrors why
@@ -154,6 +160,7 @@ impl Capture {
     ) -> Result<Self, YapperError> {
         let paused = Arc::new(AtomicBool::new(false));
         let writer_failed = Arc::new(AtomicBool::new(false));
+        let stream_failed = Arc::new(AtomicBool::new(false));
         let (buffer_tx, buffer_rx) = crossbeam_channel::unbounded::<Vec<f32>>();
         // Bounded so an undrained level meter can never grow memory; the
         // writer thread uses try_send, so a full channel just drops levels.
@@ -165,6 +172,10 @@ impl Capture {
         let cb_tx = buffer_tx.clone();
         let cb_paused = paused.clone();
         let cb_tee = tee_tx.clone();
+        // One clone per hardware-format arm below: only one stream is ever
+        // built, but each `move` error closure must own its own handle.
+        let err_failed_f32 = stream_failed.clone();
+        let err_failed_i16 = stream_failed.clone();
 
         // Owns the cpal Device/Stream for its entire lifetime; both are
         // dropped when this thread returns (after stop_rx signals/disconnects).
@@ -211,7 +222,10 @@ impl Capture {
                     move |data: &[f32], _| {
                         gate_downmix_tee_send(data, channels, &cb_paused, &cb_tx, &cb_tee);
                     },
-                    |err| eprintln!("audio stream error: {err}"),
+                    move |err| {
+                        eprintln!("audio stream error: {err}");
+                        err_failed_f32.store(true, Ordering::Relaxed);
+                    },
                     None,
                 ) {
                     Ok(s) => s,
@@ -227,7 +241,10 @@ impl Capture {
                             data.iter().copied().map(super::i16_to_f32).collect();
                         gate_downmix_tee_send(&converted, channels, &cb_paused, &cb_tx, &cb_tee);
                     },
-                    |err| eprintln!("audio stream error: {err}"),
+                    move |err| {
+                        eprintln!("audio stream error: {err}");
+                        err_failed_i16.store(true, Ordering::Relaxed);
+                    },
                     None,
                 ) {
                     Ok(s) => s,
@@ -293,6 +310,7 @@ impl Capture {
             wav_path,
             sample_rate,
             writer_failed,
+            stream_failed,
             buffer_tx: Some(buffer_tx),
             tee_tx,
             writer: Some(writer),
