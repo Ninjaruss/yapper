@@ -860,6 +860,15 @@ fn reveal_session(state: State<'_, AppState>, id: i64) -> Result<(), YapperError
         .map_err(|e| YapperError::State(format!("could not show file: {e}")))
 }
 
+/// Open an external URL in the user's default browser. In-app links route
+/// through here so they open outside the app instead of navigating the
+/// webview away from Yapper (e.g. the Patreon support link on Setup).
+#[tauri::command]
+fn open_external(url: String) -> Result<(), YapperError> {
+    tauri_plugin_opener::open_url(url, None::<&str>)
+        .map_err(|e| YapperError::State(format!("could not open link: {e}")))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Dev-only: surface tauri-internal `log::error!` output (e.g. the asset
@@ -903,6 +912,7 @@ pub fn run() {
             end_session,
             list_sessions,
             reveal_session,
+            open_external,
             forget_session,
             list_segments,
             list_events,

@@ -110,6 +110,13 @@ export function renderSetup(
       </div>
       <p class="label key-hint" id="updateHint"></p>
     </div>
+    <div class="settings-group">
+      <div class="label">Support</div>
+      <div class="key-row">
+        <span>Enjoying Yapper? Help keep the candle lit.</span>
+        <button class="quiet" id="patreonBtn">Patreon</button>
+      </div>
+    </div>
   `;
   root.querySelector<HTMLElement>("#settings")!.appendChild(settings.el);
 
@@ -618,6 +625,13 @@ export function renderSetup(
   // All best-effort — a failed/absent check just leaves the desk as-is. ----
   const updateBannerEl = root.querySelector<HTMLElement>("#updateBanner")!;
   const updHintEl = root.querySelector<HTMLElement>("#updateHint")!;
+  root.querySelector<HTMLButtonElement>("#patreonBtn")!.onclick = () => {
+    // Route through the opener so the link opens in the system browser rather
+    // than navigating the app's webview away from Yapper.
+    ipc.openExternal("https://patreon.ninjaruss.net").catch((e) => {
+      errorEl.textContent = String(e);
+    });
+  };
   const versionLineEl = root.querySelector<HTMLElement>("#versionLine")!;
   const autoButtons = root.querySelectorAll<HTMLButtonElement>("button.upd-opt");
   currentVersion().then((v) => {

@@ -107,6 +107,7 @@ export const ipc = {
   listSessions: () => invoke<Session[]>("list_sessions"),
   revealSession: (id: number) => invoke<void>("reveal_session", { id }),
   forgetSession: (id: number) => invoke<void>("forget_session", { id }),
+  openExternal: (url: string) => invoke<void>("open_external", { url }),
   listSegments: (sessionId: number) =>
     invoke<TranscriptSegment[]>("list_segments", { sessionId }),
   listEvents: (sessionId: number) =>
