@@ -99,6 +99,9 @@
   .btn:active{transform:translateY(1px); box-shadow:0 2px 0 rgba(90,66,20,.28);}
   .btn:focus-visible{outline:2px solid var(--gold-ink); outline-offset:3px;}
   .specs{font-family:var(--mono); font-size:.72rem; letter-spacing:.04em; color:var(--ink-soft); margin:14px 0 0;}
+  .alts{font-family:var(--mono); font-size:.72rem; letter-spacing:.04em; color:var(--ink-soft); margin:8px 0 0;}
+  .alts a{color:var(--ink-soft); text-decoration:none; border-bottom:1px solid rgba(111,90,51,.3);}
+  .alts a:hover{color:var(--gold-ink); border-bottom-color:var(--gold-ink);}
 
   .firstrun{margin:16px 0 0; font-size:.9rem; color:var(--ink-soft);}
   .firstrun code{
@@ -210,10 +213,17 @@
       </p>
 
       <div class="get">
-        <a class="btn" href="https://github.com/Ninjaruss/yapper/releases/download/v0.1.0/Yapper_0.1.0_universal.dmg">Download for macOS</a>
-        <p class="specs">universal · intel &amp; apple silicon · macOS 10.15+ · free, no account</p>
+        <a class="btn" id="dlPrimary" href="https://github.com/Ninjaruss/yapper/releases/download/v0.2.0/Yapper_0.2.0_universal.dmg">Download for macOS</a>
+        <p class="specs" id="dlSpecs">universal · intel &amp; apple silicon · macOS 10.15+ · free, no account</p>
+        <p class="alts">
+          Also:
+          <a data-os="macOS" href="https://github.com/Ninjaruss/yapper/releases/download/v0.2.0/Yapper_0.2.0_universal.dmg">macOS (.dmg)</a> ·
+          <a data-os="Windows" href="https://github.com/Ninjaruss/yapper/releases/download/v0.2.0/Yapper_0.2.0_x64-setup.exe">Windows (.exe)</a> ·
+          <a data-os="Linux" href="https://github.com/Ninjaruss/yapper/releases/download/v0.2.0/Yapper_0.2.0_amd64.AppImage">Linux (AppImage)</a> ·
+          <a href="https://github.com/Ninjaruss/yapper/releases/latest">all releases</a>
+        </p>
       </div>
-      <p class="firstrun">
+      <p class="firstrun" id="firstrunMac">
         Not notarized yet, so on first open run this once:
         <code>xattr -dr com.apple.quarantine /Applications/Yapper.app</code>
       </p>
@@ -223,10 +233,86 @@
       <span class="made">Made on a desk lit by a candle.</span>
       <span>
         <a href="https://github.com/Ninjaruss/yapper">source</a> ·
-        <a href="https://github.com/Ninjaruss/yapper/releases/tag/v0.1.0">release v0.1.0</a> ·
+        <a href="https://github.com/Ninjaruss/yapper/releases/latest">releases</a> ·
         <a href="https://patreon.ninjaruss.net">Patreon</a>
       </span>
     </footer>
   </main>
+
+  <!--
+    Progressive enhancement for the download block. With JS off, the static
+    markup above already works: macOS .dmg is the primary button and every
+    platform is listed under "Also". With JS on, this promotes the visitor's
+    own platform to the primary button and rewrites the version. It first
+    trusts the pinned v0.2.0 links, then asks the GitHub API for the true
+    latest release and swaps in its real asset URLs — so the links never go
+    stale after a new release, and any failure quietly leaves the static
+    fallback in place.
+  -->
+  <script>
+  (function () {
+    var REPO = "Ninjaruss/yapper";
+    var FALLBACK_VER = "0.2.0";
+    var PLATFORMS = {
+      macOS:   { label: "Download for macOS",   specs: "universal · intel & apple silicon · macOS 10.15+ · free, no account", file: function (v) { return "Yapper_" + v + "_universal.dmg"; },  match: function (n) { return /\.dmg$/i.test(n); } },
+      Windows: { label: "Download for Windows", specs: "x64 · Windows 10+ · free, no account",                                file: function (v) { return "Yapper_" + v + "_x64-setup.exe"; }, match: function (n) { return /-setup\.exe$/i.test(n); } },
+      Linux:   { label: "Download for Linux",   specs: "AppImage · x86-64 · free, no account",                                file: function (v) { return "Yapper_" + v + "_amd64.AppImage"; }, match: function (n) { return /\.AppImage$/i.test(n); } }
+    };
+
+    function detectOS() {
+      var p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || "";
+      if (/Win/i.test(p)) return "Windows";
+      if (!/Mac/i.test(p) && /Linux|X11|Android|CrOS/i.test(p)) return "Linux";
+      return "macOS";
+    }
+
+    function releaseUrl(ver, file) {
+      return "https://github.com/" + REPO + "/releases/download/v" + ver + "/" + file;
+    }
+
+    var os = detectOS();
+    var primary = document.getElementById("dlPrimary");
+    var specs = document.getElementById("dlSpecs");
+    var firstrunMac = document.getElementById("firstrunMac");
+    var altLinks = document.querySelectorAll(".alts a[data-os]");
+
+    // The first-run xattr note only applies to the unsigned macOS build.
+    if (firstrunMac && os !== "macOS") firstrunMac.style.display = "none";
+
+    // Point the primary button at the detected platform using version `ver`
+    // and, when available, a map of {os: assetDownloadUrl} from the API.
+    function apply(ver, urls) {
+      var pl = PLATFORMS[os];
+      if (pl) {
+        primary.textContent = pl.label;
+        primary.href = (urls && urls[os]) || releaseUrl(ver, pl.file(ver));
+        specs.textContent = pl.specs;
+      }
+      altLinks.forEach(function (a) {
+        var o = a.getAttribute("data-os");
+        if (PLATFORMS[o]) a.href = (urls && urls[o]) || releaseUrl(ver, PLATFORMS[o].file(ver));
+      });
+    }
+
+    apply(FALLBACK_VER, null);
+
+    fetch("https://api.github.com/repos/" + REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (rel) {
+        if (!rel || !rel.tag_name) return;
+        var ver = String(rel.tag_name).replace(/^v/, "");
+        var urls = null;
+        if (rel.assets && rel.assets.length) {
+          urls = {};
+          Object.keys(PLATFORMS).forEach(function (o) {
+            var hit = rel.assets.filter(function (x) { return PLATFORMS[o].match(x.name); })[0];
+            if (hit) urls[o] = hit.browser_download_url;
+          });
+        }
+        apply(ver, urls);
+      })
+      .catch(function () { /* keep the static/fallback links */ });
+  })();
+  </script>
 </body>
 </html>
