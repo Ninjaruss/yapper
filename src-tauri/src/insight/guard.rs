@@ -41,8 +41,8 @@ use crate::insight::OutlineEntry;
 /// "new"/"old"/"first" earned their place from harness runs: "the new job"
 /// vs "the new city" must NOT match on the strength of "new" alone.
 const STOPWORDS: &[&str] = &[
-    "the", "a", "an", "to", "of", "in", "on", "at", "for", "and", "with", "my",
-    "that", "this", "about", "new", "old", "first",
+    "the", "a", "an", "to", "of", "in", "on", "at", "for", "and", "with", "my", "that", "this",
+    "about", "new", "old", "first",
 ];
 
 fn content_tokens(s: &str) -> Vec<String> {
@@ -153,7 +153,10 @@ pub fn enforce_single_current(entries: &[OutlineEntry]) -> Vec<OutlineEntry> {
 pub fn damp_labels(current: &[OutlineEntry], incoming: &[OutlineEntry]) -> Vec<OutlineEntry> {
     let mut out: Vec<OutlineEntry> = Vec::with_capacity(incoming.len());
     for inc in incoming {
-        let resolved = match current.iter().find(|cur| labels_match(&cur.label, &inc.label)) {
+        let resolved = match current
+            .iter()
+            .find(|cur| labels_match(&cur.label, &inc.label))
+        {
             Some(cur) => OutlineEntry {
                 label: cur.label.clone(),
                 status: inc.status,
@@ -186,13 +189,19 @@ mod tests {
 
     #[test]
     fn grounded_when_phrase_present_verbatim() {
-        let recent = vec![seg(1000, "and honestly the quiet after everyone left was strange")];
+        let recent = vec![seg(
+            1000,
+            "and honestly the quiet after everyone left was strange",
+        )];
         assert!(is_grounded("the quiet after everyone left", &recent));
     }
 
     #[test]
     fn grounded_ignores_case_and_punctuation() {
-        let recent = vec![seg(1000, "And honestly — the QUIET, after everyone left, was strange.")];
+        let recent = vec![seg(
+            1000,
+            "And honestly — the QUIET, after everyone left, was strange.",
+        )];
         assert!(is_grounded("the quiet after everyone left", &recent));
     }
 
@@ -207,7 +216,10 @@ mod tests {
 
     #[test]
     fn not_grounded_when_paraphrased() {
-        let recent = vec![seg(1000, "and honestly the silence once they went home was strange")];
+        let recent = vec![seg(
+            1000,
+            "and honestly the silence once they went home was strange",
+        )];
         assert!(!is_grounded("the quiet after everyone left", &recent));
     }
 
@@ -332,8 +344,8 @@ mod tests {
         assert!(!labels_match("Moving to Austin", "the first day at work"));
         assert!(!labels_match("", "anything"));
         assert!(!labels_match("the of and", "to a an")); // stopwords only
-        // Weak shared adjectives must not glue distinct topics together
-        // (harness run 5: "the new city" was swallowed by "the new job").
+                                                         // Weak shared adjectives must not glue distinct topics together
+                                                         // (harness run 5: "the new city" was swallowed by "the new job").
         assert!(!labels_match("the new job", "the new city"));
         // One shared token is never enough for multi-word labels (harness
         // run 6 false positives).

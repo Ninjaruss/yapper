@@ -549,7 +549,12 @@ mod tests {
     #[test]
     fn condense_transcript_over_budget_keeps_head_and_tail() {
         let lines: Vec<(i64, String)> = (0..200)
-            .map(|i| (i * 1_000, format!("line number {i} with some padding words")))
+            .map(|i| {
+                (
+                    i * 1_000,
+                    format!("line number {i} with some padding words"),
+                )
+            })
             .collect();
         let s = condense_transcript(&lines, 2_000);
         assert!(s.len() <= 2_100, "stays near budget: {}", s.len());
@@ -768,7 +773,8 @@ mod tests {
         let empty = r#"{"outline":[],"question":"Q?","sparked_by":"  ","wrapup_ready":false,"shine":false}"#;
         assert!(parse_update(empty, None).unwrap().sparked_by.is_none());
 
-        let wrong_type = r#"{"outline":[],"question":"Q?","sparked_by":42,"wrapup_ready":false,"shine":false}"#;
+        let wrong_type =
+            r#"{"outline":[],"question":"Q?","sparked_by":42,"wrapup_ready":false,"shine":false}"#;
         assert!(parse_update(wrong_type, None).unwrap().sparked_by.is_none());
     }
 }

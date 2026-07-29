@@ -181,8 +181,15 @@ mod tests {
         assert!(flac_path.exists(), "flac file should exist");
         let flac_bytes = std::fs::read(&flac_path).unwrap();
         assert!(!flac_bytes.is_empty());
-        assert_eq!(&flac_bytes[..4], FLAC_MAGIC, "flac file should start with fLaC magic");
-        assert!(!wav_path.exists(), "wav should be deleted after successful encode");
+        assert_eq!(
+            &flac_bytes[..4],
+            FLAC_MAGIC,
+            "flac file should start with fLaC magic"
+        );
+        assert!(
+            !wav_path.exists(),
+            "wav should be deleted after successful encode"
+        );
         assert!(
             (flac_bytes.len() as u64) < wav_size,
             "flac ({}) should be smaller than wav ({wav_size})",
@@ -254,8 +261,7 @@ mod tests {
         let n = 16_000; // 1 second
         for i in 0..n {
             let t = i as f32 / 16_000.0;
-            let sample =
-                (t * 440.0 * std::f32::consts::TAU).sin() * 0.5 * (1i32 << 23) as f32;
+            let sample = (t * 440.0 * std::f32::consts::TAU).sin() * 0.5 * (1i32 << 23) as f32;
             writer.write_sample(sample as i32).unwrap();
         }
         writer.finalize().unwrap();
@@ -271,10 +277,14 @@ mod tests {
                     !wav_path.exists(),
                     "24-bit encode succeeded but WAV not deleted"
                 );
-                assert!(flac_path.exists(), "24-bit encode claimed success but FLAC missing");
+                assert!(
+                    flac_path.exists(),
+                    "24-bit encode claimed success but FLAC missing"
+                );
                 let flac_bytes = std::fs::read(&flac_path).unwrap();
                 assert_eq!(
-                    &flac_bytes[..4], FLAC_MAGIC,
+                    &flac_bytes[..4],
+                    FLAC_MAGIC,
                     "24-bit encode produced invalid FLAC magic"
                 );
             }
@@ -319,6 +329,9 @@ mod tests {
             old_size,
             "new FLAC should be different size than the old file"
         );
-        assert!(!wav_path.exists(), "WAV should be deleted after successful encode");
+        assert!(
+            !wav_path.exists(),
+            "WAV should be deleted after successful encode"
+        );
     }
 }

@@ -361,7 +361,10 @@ mod tests {
         }
         // Push two consecutive moderate-filler segments (3 fillers each = 6.0 fpm)
         assert!(seg(&mut t_default, 30, 12, 3).is_none()); // first hot
-        assert!(seg(&mut t_default, 35, 12, 3).is_some(), "default tracker should fire on 6 fpm"); // second hot → fires
+        assert!(
+            seg(&mut t_default, 35, 12, 3).is_some(),
+            "default tracker should fire on 6 fpm"
+        ); // second hot → fires
 
         // Now test with widened thresholds: same rate should NOT fire
         let mut t_widened = RhythmTracker::with_ratio_bonus(Some(base()), 0.5, 0.0);
